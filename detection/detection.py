@@ -42,8 +42,9 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 
 DASHBOARD_URL   = "http://127.0.0.1:5000/api/alert"
+NETWORKS_URL    = "http://127.0.0.1:5000/api/networks"
 LOG_FILE        = "forensic_log.json"
-INTERFACE       = "wlan0mon"
+INTERFACE       = "wlan0"
 SCAN_INTERVAL   = 10
 SCAN_DURATION   = 8
 
@@ -250,6 +251,15 @@ def send_to_dashboard(alert):
     except Exception:
         pass
 
+def send_networks_to_dashboard(networks):
+    try:
+        requests.post(
+            NETWORKS_URL,
+            json=networks,
+            timeout=2
+        )
+    except Exception as exc:
+        print(f"[Dashboard] Network update failed: {exc}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENTRY POINT

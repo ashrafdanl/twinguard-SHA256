@@ -1,7 +1,16 @@
+# Python
 __pycache__/
 *.pyc
+.venv/
 venv/
-.env
+
+# Wi-Fi scan output
+scans/*.csv
+
+# Runtime/generated logs
 forensic_log.json
-*.log
-.DS_Store
+run/forensic_log.json
+
+# Environment/secrets
+.env
+

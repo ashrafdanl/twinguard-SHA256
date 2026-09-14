@@ -26,6 +26,16 @@ LOG_FILE = "forensic_log.json"
 CFG_FILE = "twinguard_config.json"
 log_lock = threading.Lock()
 
+
+networks_lock = threading.Lock()
+latest_networks = []
+last_scan_time = None
+
+# ── Live network state ───────────────────────────────────────────────────────
+networks_lock = threading.Lock()
+latest_networks = []
+last_scan_time = None
+
 # ── Config ────────────────────────────────────────────────────────────────────
 def load_config():
     defaults = {"retention_days": 30}
@@ -93,7 +103,39 @@ def purge_old_logs():
 
 threading.Thread(target=purge_old_logs, daemon=True).start()
 
+@app.route("/api/networks", methods=["POST"])
+def receive_networks():
+    global latest_networks, last_scan_time
+
+    data = request.get_json(force=True)
+
+    if not isinstance(data, list):
+        return jsonify({"error": "Expected a list of networks"}), 400
+
+    with networks_lock:
+        latest_networks = data
+        last_scan_time = datetime.now(timezone.utc).isoformat()
+
+    print(f"[SCAN] Received {len(data)} network(s)")
+
+    return jsonify({
+        "status": "received",
+        "count": len(data)
+    }), 200
+
+
+@app.route("/api/networks", methods=["GET"])
+def get_networks():
+    with networks_lock:
+        return jsonify({
+            "networks": latest_networks,
+            "last_scan": last_scan_time
+        })
+
+
+
 # ── API ───────────────────────────────────────────────────────────────────────
+
 @app.route("/api/alert", methods=["POST"])
 def receive_alert():
     data = request.get_json(force=True)

@@ -18,7 +18,7 @@ def cleanup_old_scans():
                 pass
 
 
-def scan_networks(interface="wlan0mon", duration=8):
+def scan_networks(interface="wlan0", duration=8):
     cleanup_old_scans()
 
     output_path = os.path.join(SCAN_DIR, SCAN_PREFIX)
