@@ -379,6 +379,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TwinGuard-SHA256 | Dashboard</title>
+<link rel="icon" type="image/png" href="/static/favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;500;700;900&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -406,9 +407,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .sidebar{position:fixed;top:0;left:0;bottom:0;width:var(--side);background:var(--bg2);
   border-right:1px solid var(--border);display:flex;flex-direction:column;z-index:200;transition:background var(--t);}
 .logo{display:flex;align-items:center;gap:12px;padding:22px 20px;border-bottom:1px solid var(--border);}
-.logo-icon{width:40px;height:40px;border-radius:10px;font-size:20px;flex-shrink:0;
-  background:linear-gradient(135deg,var(--cyan),var(--accent2));display:flex;align-items:center;justify-content:center;
-  box-shadow:0 0 18px var(--glow);}
+.logo-icon{width:44px;height:44px;flex-shrink:0;background:linear-gradient(135deg,var(--cyan),var(--accent2));
+  -webkit-mask:url(/static/logo.png) center/contain no-repeat;mask:url(/static/logo.png) center/contain no-repeat;}
 .logo-text{font-size:16px;font-weight:900;letter-spacing:2px;color:var(--text);}
 .logo-sub{font-family:var(--mono);font-size:9px;color:var(--dim);letter-spacing:2px;margin-top:2px;}
 .nav{padding:18px 12px;display:flex;flex-direction:column;gap:4px;flex:1;}
@@ -614,7 +614,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
 
 <aside class="sidebar">
   <div class="logo">
-    <div class="logo-icon">🛡</div>
+    <div class="logo-icon" role="img" aria-label="TwinGuard logo"></div>
     <div>
       <div class="logo-text">TWINGUARD</div>
       <div class="logo-sub">SHA-256 // ROGUE AP DEFENSE</div>
@@ -641,7 +641,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
     <div class="page-title">Rogue AP <span>Detection</span> &amp; Forensics</div>
   </div>
   <div class="top-right">
-    <div class="chip">UTC <b id="clock">--:--:--</b></div>
+    <div class="chip">KUALA LUMPUR (GMT+8) <b id="clock">--:--:--</b></div>
     <div class="status-badge"><div class="pulse"></div>MONITORING ACTIVE</div>
   </div>
 </header>
@@ -652,7 +652,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
     <div class="stats-grid">
       <div class="stat-card total"><div class="stat-label">Total Alerts</div><div class="stat-value" id="stat-total">0</div><div class="stat-sub">in retention window</div></div>
       <div class="stat-card recent"><div class="stat-label">Alerts (24h)</div><div class="stat-value" id="stat-24h">0</div><div class="stat-sub">last 24 hours</div></div>
-      <div class="stat-card integrity" id="card-integrity"><div class="stat-label">Log Integrity</div><div class="stat-value" id="stat-integrity">—</div><div class="stat-sub" id="stat-integrity-sub">no entries</div></div>
+      <div class="stat-card integrity" id="card-integrity" title="Share of forensic log entries whose SHA-256 hash still matches their contents. Below 100% means an entry was edited after it was recorded."><div class="stat-label">Log Integrity</div><div class="stat-value" id="stat-integrity">—</div><div class="stat-sub" id="stat-integrity-sub">no entries</div></div>
       <div class="stat-card high"><div class="stat-label">High Severity</div><div class="stat-value" id="stat-high">0</div><div class="stat-sub">shown in threat log</div></div>
       <div class="stat-card users"><div class="stat-label">Total Users</div><div class="stat-value" id="stat-users">0</div><div class="stat-sub">registered operators</div></div>
       <div class="stat-card active"><div class="stat-label">Active Users</div><div class="stat-value" id="stat-active">0</div><div class="stat-sub">accounts enabled</div></div>
@@ -667,7 +667,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
         </div>
       </div>
       <div class="panel chart-card">
-        <div class="chart-title">Alerts · Last 14 Days (UTC) <b id="trend-sum"></b></div>
+        <div class="chart-title">Alerts · Last 14 Days (GMT+8) <b id="trend-sum"></b></div>
         <svg class="svg-chart" id="trend-chart" role="img" aria-label="Daily alerts by severity over the last 14 days"></svg>
         <div class="legend inline" id="trend-legend"></div>
       </div>
@@ -698,7 +698,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
     <div class="panel table-wrap">
       <table>
         <thead><tr>
-          <th>Timestamp (UTC)</th><th>Severity</th><th>SSID</th><th>Rogue BSSID</th>
+          <th>Timestamp (GMT+8)</th><th>Severity</th><th>SSID</th><th>Rogue BSSID</th>
           <th>Signal</th><th>Encryption</th><th>Detection Reasons</th><th>SHA-256 Integrity</th>
         </tr></thead>
         <tbody id="log-body">
@@ -723,7 +723,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
       </form>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th>Created (UTC)</th><th>Last Login (UTC)</th><th>Action</th></tr></thead>
+          <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th>Created (GMT+8)</th><th>Last Login (GMT+8)</th><th>Action</th></tr></thead>
           <tbody id="user-body">
             <tr><td colspan="7" class="empty-state"><div class="icon">👥</div>Loading users...</td></tr>
           </tbody>
@@ -754,7 +754,6 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
 
 <script>
 let allLogs = [], allUsers = [], activeTab = null, prevCounts = {};
-const UNASSIGNED = '__unassigned__';
 
 // ── Session guard: any 401 means the admin session expired ──
 const _fetch = window.fetch.bind(window);
@@ -780,13 +779,22 @@ const navLinks = document.querySelectorAll('#nav a');
 navLinks.forEach(a => a.addEventListener('click', () => {
   navLinks.forEach(x => x.classList.remove('active')); a.classList.add('active');
 }));
-function tick() { document.getElementById('clock').textContent = new Date().toISOString().substring(11,19); }
+// Logs are stored in UTC; everything shown is Kuala Lumpur time (GMT+8, no DST)
+const KL_OFFSET_MS = 8 * 3600e3;
+function toKL(v) {
+  if (!v) return null;
+  let s = String(v);
+  if (!/(Z|[+-][0-9][0-9]:?[0-9][0-9])$/.test(s)) s += 'Z';   // untagged timestamps are UTC
+  const t = Date.parse(s);
+  return isNaN(t) ? null : new Date(t + KL_OFFSET_MS).toISOString();  // KL wall-clock as ISO text
+}
+function tick() { document.getElementById('clock').textContent = toKL(new Date().toISOString()).substring(11,19); }
 tick(); setInterval(tick, 1000);
 
 function esc(v) {
   return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
-function fmtTs(v) { return v ? v.replace('T',' ').substring(0,19) : '—'; }
+function fmtTs(v) { const k = toKL(v); return k ? k.replace('T',' ').substring(0,19) : '—'; }
 
 // ── Retention ──────────────────────────────────
 async function loadRetention() {
@@ -838,7 +846,7 @@ function renderTable(logs, highlight=false, emptyMsg='No high-severity alerts.')
     return;
   }
   tbody.innerHTML = logs.map((l,i) => {
-    const ts   = esc((l.timestamp||'').replace('T',' ').replace('Z',''));
+    const ts   = esc(fmtTs(l.timestamp));
     const sev  = ['HIGH','MEDIUM','LOW'].includes(l.severity) ? l.severity : 'LOW';
     const hash = esc(String(l.sha256_hash||''));
     const iok  = l.integrity_ok;
@@ -859,39 +867,40 @@ function renderTable(logs, highlight=false, emptyMsg='No high-severity alerts.')
   }).join('');
 }
 
-// Each alert belongs to the registered user named in its "username" field;
-// anything else (no user, or a user that no longer exists) is Unassigned.
-function ownerKey(l) {
-  const u = String(l.username || '').toLowerCase();
-  return u && allUsers.some(x => x.username.toLowerCase() === u) ? u : UNASSIGNED;
-}
+// Each alert belongs to the user named in its "username" field; alerts without
+// a registered user are not shown in any user's log.
+const ownerKey = l => String(l.username || '').toLowerCase();
 
 function renderThreatLog() {
   const groups = {};
   allLogs.filter(l => l.severity === 'HIGH').forEach(l => (groups[ownerKey(l)] ||= []).push(l));
 
   const tabs = allUsers.map(u => ({key: u.username.toLowerCase(), label: u.username, enabled: u.enabled}));
-  if ((groups[UNASSIGNED] || []).length || !tabs.length) tabs.push({key: UNASSIGNED, label: 'Unassigned', enabled: true});
+  const bar = document.getElementById('user-tabs'), owner = document.getElementById('log-owner');
+  if (!tabs.length) {
+    bar.replaceChildren();
+    owner.textContent = '';
+    renderTable([], false, 'No users yet. Add a user in User Management to see their log.');
+    return;
+  }
   if (!tabs.some(t => t.key === activeTab)) activeTab = tabs[0].key;
 
-  const bar = document.getElementById('user-tabs');
   bar.replaceChildren(...tabs.map(t => {
     const n = (groups[t.key] || []).length;
     const btn = htmlEl('button', 'utab' + (t.key === activeTab ? ' active' : '') + (t.enabled ? '' : ' off'));
     btn.type = 'button';
     btn.setAttribute('role', 'tab');
     btn.setAttribute('aria-selected', t.key === activeTab);
-    btn.append(htmlEl('span', 'uname-t', (t.key === UNASSIGNED ? '◌ ' : '👤 ') + t.label), htmlEl('span', 'cnt' + (n ? '' : ' zero'), n));
+    btn.append(htmlEl('span', 'uname-t', '👤 ' + t.label), htmlEl('span', 'cnt' + (n ? '' : ' zero'), n));
     btn.addEventListener('click', () => { activeTab = t.key; renderThreatLog(); });
     return btn;
   }));
 
   const current = tabs.find(t => t.key === activeTab);
   const mine    = groups[activeTab] || [];
-  const owner   = document.getElementById('log-owner');
   owner.replaceChildren(document.createTextNode('Viewing log of '), htmlEl('b', '', current.label),
     document.createTextNode(` · ${mine.length} high-severity alert${mine.length === 1 ? '' : 's'}` +
-      (current.key === UNASSIGNED ? ' not tied to any registered user' : (current.enabled ? '' : ' · account disabled'))));
+      (current.enabled ? '' : ' · account disabled')));
 
   const q = document.getElementById('search').value.toLowerCase();
   const rows = mine.filter(l => String(l.ssid || '').toLowerCase().includes(q) || String(l.bssid || '').toLowerCase().includes(q));
@@ -1004,11 +1013,11 @@ function renderTrend(logs) {
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.replaceChildren();
 
-  const now = new Date(), days = [];
+  const today = new Date(toKL(new Date().toISOString())), days = [];
   for (let i = 13; i >= 0; i--)
-    days.push(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i)).toISOString().slice(0, 10));
+    days.push(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - i)).toISOString().slice(0, 10));
   const buckets = Object.fromEntries(days.map(d => [d, {HIGH:0, MEDIUM:0, LOW:0}]));
-  logs.forEach(l => { const d = String(l.timestamp || '').slice(0, 10); if (buckets[d]) buckets[d][sevOf(l)]++; });
+  logs.forEach(l => { const d = (toKL(l.timestamp) || '').slice(0, 10); if (buckets[d]) buckets[d][sevOf(l)]++; });
   const totals = days.map(d => SEV.reduce((a, s) => a + buckets[d][s.key], 0));
   const sum = totals.reduce((a, b) => a + b, 0);
   document.getElementById('trend-sum').textContent = `${sum} total`;
@@ -1178,6 +1187,7 @@ LOGIN_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TwinGuard-SHA256 | {{ 'Admin Setup' if mode == 'setup' else 'Admin Login' }}</title>
+<link rel="icon" type="image/png" href="/static/favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;500;700;900&display=swap" rel="stylesheet">
 <style>
 :root{--accent:#4fc3f7;--accent2:#2b8fe0;--cyan:#7ddcff;--danger:#ff5a76;--safe:#3ee6a8;
@@ -1196,8 +1206,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .card::before{content:'';position:absolute;top:-1px;left:20px;width:80px;height:2px;
   background:linear-gradient(90deg,var(--accent),transparent);}
 .logo{display:flex;align-items:center;gap:12px;margin-bottom:26px;}
-.logo-icon{width:44px;height:44px;border-radius:10px;font-size:22px;display:flex;align-items:center;justify-content:center;
-  background:linear-gradient(135deg,var(--cyan),var(--accent2));box-shadow:0 0 18px var(--glow);}
+.logo-icon{width:52px;height:52px;flex-shrink:0;background:linear-gradient(135deg,var(--cyan),var(--accent2));
+  -webkit-mask:url(/static/logo.png) center/contain no-repeat;mask:url(/static/logo.png) center/contain no-repeat;}
 .logo-text{font-size:17px;font-weight:900;letter-spacing:2px;}
 .logo-sub{font-family:var(--mono);font-size:9px;color:var(--dim);letter-spacing:2px;margin-top:2px;}
 h1{font-family:var(--mono);font-size:13px;letter-spacing:3px;color:var(--accent);text-transform:uppercase;margin-bottom:6px;}
@@ -1222,7 +1232,7 @@ try { document.documentElement.setAttribute('data-theme', localStorage.getItem('
 <body>
 <div class="card">
   <div class="logo">
-    <div class="logo-icon">🛡</div>
+    <div class="logo-icon" role="img" aria-label="TwinGuard logo"></div>
     <div><div class="logo-text">TWINGUARD</div><div class="logo-sub">SHA-256 // ROGUE AP DEFENSE</div></div>
   </div>
   {% if mode == 'setup' %}
