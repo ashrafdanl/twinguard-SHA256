@@ -3,44 +3,37 @@
 TwinGuard-SHA256: Dashboard Server
 ====================================
 Features:
-  - Receives alerts from detection engine via POST /api/alert
-  - Serves web dashboard at GET /
+  - Admin web dashboard at GET / (Firebase admin login)
+  - Alerts and operator accounts live in Firebase (free Spark plan):
+      Firebase Authentication  -> admin + operator accounts
+      Cloud Firestore          -> operator profiles + sealed alerts
   - Light / Dark mode toggle
-  - Log retention: auto-delete entries older than X days
-  - SHA-256 integrity verification fix (no more false TAMPERED)
+  - Log retention: auto-delete alerts older than X days
+  - SHA-256 integrity verification of every alert
 
 Install:
-    pip install flask
+    pip install -r requirements.txt
+
+Setup:
+    see firebase/README.md (one-time Firebase project setup)
 
 Run:
     python3 dashboard_server.py
 Then open: http://127.0.0.1:5000
 """
 
-import json, hashlib, os, re, secrets, threading, time, uuid
+import json, hashlib, os, re, secrets, sys, threading, time
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
-from werkzeug.security import generate_password_hash, check_password_hash
+from firebase_store import FirebaseStore, FirebaseError, FirebaseNotConfigured
 
 app      = Flask(__name__)
-LOG_FILE = "forensic_log.json"
 CFG_FILE = "twinguard_config.json"
-USERS_FILE = "twinguard_users.json"
-ADMIN_FILE = "twinguard_admin.json"
 SECRET_FILE = "twinguard_secret.key"
-log_lock = threading.Lock()
-users_lock = threading.Lock()
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
+EMAIL_RE    = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-
-networks_lock = threading.Lock()
-latest_networks = []
-last_scan_time = None
-
-# ── Live network state ───────────────────────────────────────────────────────
-networks_lock = threading.Lock()
-latest_networks = []
-last_scan_time = None
+store = None  # FirebaseStore, created in main()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 def load_config():
@@ -57,21 +50,8 @@ def save_config(cfg):
     with open(CFG_FILE, "w") as f:
         json.dump(cfg, f, indent=2)
 
-# ── Log helpers ───────────────────────────────────────────────────────────────
-def load_logs():
-    if not os.path.exists(LOG_FILE):
-        return []
-    with log_lock:
-        try:
-            with open(LOG_FILE) as f:
-                return json.load(f)
-        except Exception:
-            return []
-
-def save_logs(entries):
-    with log_lock:
-        with open(LOG_FILE, "w") as f:
-            json.dump(entries, f, indent=2)
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
 
 def verify_sha256(entry):
     """Verify integrity. Strip sha256_hash AND integrity_ok before recomputing."""
@@ -83,30 +63,10 @@ def verify_sha256(entry):
     ).hexdigest()
     return computed == stored
 
-
-# ── User helpers (call while holding users_lock) ─────────────────────────────
-def load_users():
-    if not os.path.exists(USERS_FILE):
-        return []
-    try:
-        with open(USERS_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-def save_users(users):
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=2)
-
-def public_user(u):
-    return {k: v for k, v in u.items() if k != "password_hash"}
-
 # ── Admin authentication ──────────────────────────────────────────────────────
 LOOPBACK = ("127.0.0.1", "::1")
 # Endpoints reachable without an admin session
-PUBLIC_ENDPOINTS = {"login", "setup", "user_login", "static"}
-# Ingest endpoints used by the local detection engine: no session, localhost only
-INGEST_ENDPOINTS = {"receive_alert", "receive_networks"}
+PUBLIC_ENDPOINTS = {"login", "setup", "static"}
 
 def load_secret_key():
     if os.path.exists(SECRET_FILE):
@@ -125,21 +85,7 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
 )
 
-def load_admin():
-    if not os.path.exists(ADMIN_FILE):
-        return None
-    try:
-        with open(ADMIN_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-def save_admin(admin):
-    fd = os.open(ADMIN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(admin, f, indent=2)
-
-# Brute-force throttle: 5 failures per IP+account locks it for 5 minutes
+# Brute-force throttle: 5 failures per IP locks it for 5 minutes
 failed_lock     = threading.Lock()
 failed_attempts = {}
 MAX_FAILS, LOCK_SECONDS = 5, 300
@@ -160,95 +106,40 @@ def clear_failures(key):
 
 @app.before_request
 def require_admin():
-    ep = request.endpoint
-    if ep in INGEST_ENDPOINTS:
-        if request.remote_addr not in LOOPBACK:
-            return jsonify({"error": "Forbidden"}), 403
-        return None
-    if ep in PUBLIC_ENDPOINTS:
+    if request.endpoint in PUBLIC_ENDPOINTS:
         return None
     if not session.get("admin"):
         if request.path.startswith("/api/"):
             return jsonify({"error": "Authentication required"}), 401
-        return redirect(url_for("setup" if load_admin() is None else "login"))
+        return redirect(url_for("login" if store.admin_exists() else "setup"))
     # Session-authenticated writes must be real JSON requests (blocks cross-site form CSRF)
     if request.method == "POST" and request.path.startswith("/api/") and not request.is_json:
         return jsonify({"error": "Content-Type must be application/json"}), 415
     return None
 
+@app.errorhandler(FirebaseError)
+def firebase_error(e):
+    return jsonify({"error": str(e)}), 400
+
 # ── Retention engine (runs every hour) ───────────────────────────────────────
 def purge_old_logs():
     while True:
         try:
-            cfg    = load_config()
-            days   = int(cfg.get("retention_days", 30))
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-            entries = load_logs()
-            kept = []
-            for e in entries:
-                try:
-                    ts = datetime.fromisoformat(e.get("timestamp","").replace("Z","+00:00"))
-                    if ts >= cutoff:
-                        kept.append(e)
-                except Exception:
-                    kept.append(e)
-            removed = len(entries) - len(kept)
+            days   = int(load_config().get("retention_days", 30))
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+            removed = store.purge_alerts_before(cutoff)
             if removed > 0:
-                save_logs(kept)
-                print(f"[Retention] Purged {removed} log(s) older than {days} day(s).")
+                print(f"[Retention] Purged {removed} alert(s) older than {days} day(s).")
         except Exception as ex:
             print(f"[Retention] Error: {ex}")
         time.sleep(3600)
 
-threading.Thread(target=purge_old_logs, daemon=True).start()
-
-@app.route("/api/networks", methods=["POST"])
-def receive_networks():
-    global latest_networks, last_scan_time
-
-    data = request.get_json(force=True)
-
-    if not isinstance(data, list):
-        return jsonify({"error": "Expected a list of networks"}), 400
-
-    with networks_lock:
-        latest_networks = data
-        last_scan_time = datetime.now(timezone.utc).isoformat()
-
-    print(f"[SCAN] Received {len(data)} network(s)")
-
-    return jsonify({
-        "status": "received",
-        "count": len(data)
-    }), 200
-
-
-@app.route("/api/networks", methods=["GET"])
-def get_networks():
-    with networks_lock:
-        return jsonify({
-            "networks": latest_networks,
-            "last_scan": last_scan_time
-        })
-
-
-
 # ── API ───────────────────────────────────────────────────────────────────────
-
-@app.route("/api/alert", methods=["POST"])
-def receive_alert():
-    data = request.get_json(force=True)
-    entries = load_logs()
-    entries.append(data)
-    save_logs(entries)
-    print(f"[ALERT] [{data.get('severity','?')}] {data.get('ssid','?')}")
-    return jsonify({"status": "received"}), 200
 
 @app.route("/api/logs", methods=["GET"])
 def get_logs():
-    entries = load_logs()
-    result  = []
-    for e in entries:
+    result = []
+    for e in store.alerts():
         copy = dict(e)
         copy["integrity_ok"] = verify_sha256(e)  # verify ORIGINAL, attach to COPY
         result.append(copy)
@@ -256,10 +147,9 @@ def get_logs():
 
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
-    logs = load_logs()
-    cfg  = load_config()
-    with users_lock:
-        users = load_users()
+    logs  = store.alerts()
+    users = store.user_profiles().values()
+    cfg   = load_config()
     return jsonify({
         "total_alerts":   len(logs),
         "high":           sum(1 for l in logs if l.get("severity") == "HIGH"),
@@ -268,7 +158,7 @@ def get_stats():
         "total_users":    len(users),
         "active_users":   sum(1 for u in users if u.get("enabled")),
         "retention_days": cfg.get("retention_days", 30),
-        "last_updated":   datetime.now(timezone.utc).isoformat(),
+        "last_updated":   now_iso(),
     })
 
 @app.route("/api/retention", methods=["GET"])
@@ -292,7 +182,7 @@ def set_retention():
 
 @app.route("/api/verify/<sha256_hash>", methods=["GET"])
 def verify_entry(sha256_hash):
-    for e in load_logs():
+    for e in store.alerts():
         if e.get("sha256_hash") == sha256_hash:
             return jsonify({"found": True, "integrity_ok": verify_sha256(e), "entry": e})
     return jsonify({"found": False}), 404
@@ -301,8 +191,7 @@ def verify_entry(sha256_hash):
 # ── User management (app operators under the admin) ──────────────────────────
 @app.route("/api/users", methods=["GET"])
 def list_users():
-    with users_lock:
-        return jsonify([public_user(u) for u in load_users()])
+    return jsonify(store.users())
 
 @app.route("/api/users", methods=["POST"])
 def create_user():
@@ -313,64 +202,25 @@ def create_user():
     password  = str(data.get("password", ""))
     if not USERNAME_RE.match(username):
         return jsonify({"error": "Username must be 3-32 chars: letters, digits, . _ -"}), 400
+    if not EMAIL_RE.match(email):
+        return jsonify({"error": "A valid email is required (operators sign in with it)"}), 400
     if len(password) < 8:
         return jsonify({"error": "Password must be at least 8 characters"}), 400
-    with users_lock:
-        users = load_users()
-        if any(u["username"].lower() == username.lower() for u in users):
-            return jsonify({"error": "Username already exists"}), 409
-        user = {
-            "id":            uuid.uuid4().hex[:12],
-            "username":      username,
-            "full_name":     full_name,
-            "email":         email,
-            "role":          "operator",
-            "enabled":       True,
-            "created_at":    datetime.now(timezone.utc).isoformat(),
-            "last_login":    None,
-            "password_hash": generate_password_hash(password),
-        }
-        users.append(user)
-        save_users(users)
-    print(f"[Users] Created user '{username}'.")
-    return jsonify(public_user(user)), 201
+    uid = store.create_user(username, full_name, email, password, now_iso())
+    print(f"[Users] Created user '{username}' ({email}).")
+    return jsonify({"id": uid, "username": username}), 201
 
 @app.route("/api/users/<user_id>/status", methods=["POST"])
 def set_user_status(user_id):
     data = request.get_json(force=True) or {}
     if not isinstance(data.get("enabled"), bool):
         return jsonify({"error": "'enabled' must be true or false"}), 400
-    with users_lock:
-        users = load_users()
-        for u in users:
-            if u["id"] == user_id:
-                u["enabled"] = data["enabled"]
-                save_users(users)
-                print(f"[Users] {'Enabled' if u['enabled'] else 'Disabled'} user '{u['username']}'.")
-                return jsonify(public_user(u))
-    return jsonify({"error": "User not found"}), 404
-
-@app.route("/api/users/login", methods=["POST"])
-def user_login():
-    """Login endpoint for the operator app. Disabled accounts are rejected."""
-    data     = request.get_json(force=True) or {}
-    username = str(data.get("username", "")).strip()
-    password = str(data.get("password", ""))
-    key = f"user:{request.remote_addr}:{username.lower()}"
-    if is_locked(key):
-        return jsonify({"error": "Too many failed attempts, try again later"}), 429
-    with users_lock:
-        users = load_users()
-        for u in users:
-            if u["username"].lower() == username.lower() and check_password_hash(u["password_hash"], password):
-                clear_failures(key)
-                if not u.get("enabled"):
-                    return jsonify({"error": "Account disabled"}), 403
-                u["last_login"] = datetime.now(timezone.utc).isoformat()
-                save_users(users)
-                return jsonify({"status": "ok", "user": public_user(u)})
-    record_failure(key)
-    return jsonify({"error": "Invalid credentials"}), 401
+    try:
+        username = store.set_user_enabled(user_id, data["enabled"])
+    except KeyError:
+        return jsonify({"error": "User not found"}), 404
+    print(f"[Users] {'Enabled' if data['enabled'] else 'Disabled'} user '{username}'.")
+    return jsonify({"id": user_id, "enabled": data["enabled"]})
 
 # ── Dashboard HTML ────────────────────────────────────────────────────────────
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -423,7 +273,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   padding:8px 14px;cursor:pointer;font-family:var(--mono);font-size:12px;color:var(--text);
   display:flex;align-items:center;justify-content:center;gap:6px;transition:all var(--t);}
 .theme-toggle:hover{border-color:var(--accent);color:var(--accent);}
-.sys-line{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:1px;}
+.sys-line{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:1px;overflow-wrap:anywhere;}
 .logout{width:100%;}
 
 /* ── Topbar ────────────────────────────── */
@@ -714,7 +564,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
       <form class="user-form" id="user-form" onsubmit="addUser(event)">
         <label>Username<input class="field" id="u-username" required minlength="3" maxlength="32" placeholder="operator01"></label>
         <label>Full Name<input class="field" id="u-fullname" maxlength="80" placeholder="Ali Ahmad"></label>
-        <label>Email<input class="field" id="u-email" type="email" maxlength="120" placeholder="ali@example.com"></label>
+        <label>Email (app sign-in)<input class="field" id="u-email" type="email" required maxlength="120" placeholder="ali@example.com"></label>
         <label>Password<input class="field" id="u-password" type="password" required minlength="8" placeholder="min. 8 characters"></label>
         <div class="form-actions">
           <button class="btn primary" type="submit">＋ Add User</button>
@@ -867,15 +717,15 @@ function renderTable(logs, highlight=false, emptyMsg='No high-severity alerts.')
   }).join('');
 }
 
-// Each alert belongs to the user named in its "username" field; alerts without
-// a registered user are not shown in any user's log.
-const ownerKey = l => String(l.username || '').toLowerCase();
+// Each alert carries the Firebase uid of the operator whose detector sealed it;
+// alerts without a registered user are not shown in any user's log.
+const ownerKey = l => String(l.uid || '');
 
 function renderThreatLog() {
   const groups = {};
   allLogs.filter(l => l.severity === 'HIGH').forEach(l => (groups[ownerKey(l)] ||= []).push(l));
 
-  const tabs = allUsers.map(u => ({key: u.username.toLowerCase(), label: u.username, enabled: u.enabled}));
+  const tabs = allUsers.map(u => ({key: u.id, label: u.username, enabled: u.enabled}));
   const bar = document.getElementById('user-tabs'), owner = document.getElementById('log-owner');
   if (!tabs.length) {
     bar.replaceChildren();
@@ -1129,7 +979,7 @@ async function loadUsers() {
       <td class="ts">${fmtTs(u.created_at)}</td>
       <td class="ts">${fmtTs(u.last_login)}</td>
       <td class="row-actions">
-        <button class="btn sm" data-user="${esc(u.username.toLowerCase())}" onclick="openUserLog(this.dataset.user)">📄 View Log</button>
+        <button class="btn sm" data-user="${esc(u.id)}" onclick="openUserLog(this.dataset.user)">📄 View Log</button>
         ${u.enabled
         ? `<button class="btn sm danger" onclick="setUserStatus('${esc(u.id)}', false)">Disable</button>`
         : `<button class="btn sm enable" onclick="setUserStatus('${esc(u.id)}', true)">Enable</button>`}</td>
@@ -1240,10 +1090,10 @@ try { document.documentElement.setAttribute('data-theme', localStorage.getItem('
     {% if locked %}
       <p class="hint">No admin account exists yet. For security, the admin account can only be created from the machine running the dashboard. Open <b>http://127.0.0.1:5000</b> on that machine.</p>
     {% else %}
-      <p class="hint">Create the administrator account for this dashboard.</p>
+      <p class="hint">Create the administrator account for this dashboard. It is stored in Firebase Authentication.</p>
       {% if error %}<div class="error">✗ {{ error }}</div>{% endif %}
       <form method="post">
-        <label>Admin Username<input name="username" required minlength="3" maxlength="32" autocomplete="username" autofocus></label>
+        <label>Admin Email<input name="email" type="email" required maxlength="120" autocomplete="username" autofocus></label>
         <label>Password<input name="password" type="password" required minlength="10" autocomplete="new-password" placeholder="min. 10 characters"></label>
         <label>Confirm Password<input name="confirm" type="password" required minlength="10" autocomplete="new-password"></label>
         <button type="submit">Create Admin Account</button>
@@ -1254,7 +1104,7 @@ try { document.documentElement.setAttribute('data-theme', localStorage.getItem('
     <p class="hint">Authorized personnel only. Access attempts are logged.</p>
     {% if error %}<div class="error">✗ {{ error }}</div>{% endif %}
     <form method="post">
-      <label>Username<input name="username" required autocomplete="username" autofocus></label>
+      <label>Email<input name="email" type="email" required autocomplete="username" autofocus></label>
       <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
       <button type="submit">Log In</button>
     </form>
@@ -1271,57 +1121,61 @@ def dashboard():
 @app.route("/setup", methods=["GET", "POST"])
 def setup():
     """First-run admin account creation. Only allowed from this machine."""
-    if load_admin() is not None:
+    if store.admin_exists():
         return redirect(url_for("login"))
     if request.remote_addr not in LOOPBACK:
         return render_template_string(LOGIN_HTML, mode="setup", locked=True, error=None), 403
     error = None
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
+        email    = request.form.get("email", "").strip()
         password = request.form.get("password", "")
         confirm  = request.form.get("confirm", "")
-        if not USERNAME_RE.match(username):
-            error = "Username must be 3-32 chars: letters, digits, . _ -"
+        if not EMAIL_RE.match(email):
+            error = "Enter a valid email address"
         elif len(password) < 10:
             error = "Password must be at least 10 characters"
         elif password != confirm:
             error = "Passwords do not match"
         else:
-            save_admin({"username": username,
-                        "password_hash": generate_password_hash(password),
-                        "created_at": datetime.now(timezone.utc).isoformat()})
-            print(f"[Auth] Admin account '{username}' created.")
-            session.clear()
-            session.permanent = True
-            session["admin"] = username
-            return redirect(url_for("dashboard"))
+            try:
+                store.create_admin(email, password, now_iso())
+            except FirebaseError as e:
+                error = str(e)
+            else:
+                print(f"[Auth] Admin account '{email}' created in Firebase.")
+                session.clear()
+                session.permanent = True
+                session["admin"] = email
+                return redirect(url_for("dashboard"))
     return render_template_string(LOGIN_HTML, mode="setup", locked=False, error=error)
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    admin = load_admin()
-    if admin is None:
+    if not store.admin_exists():
         return redirect(url_for("setup"))
     if session.get("admin"):
         return redirect(url_for("dashboard"))
     error = None
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
+        email    = request.form.get("email", "").strip()
         password = request.form.get("password", "")
         key = f"admin:{request.remote_addr}"
         if is_locked(key):
             error = "Too many failed attempts. Try again in a few minutes."
-        elif username.lower() == admin["username"].lower() and check_password_hash(admin["password_hash"], password):
-            clear_failures(key)
-            session.clear()
-            session.permanent = True
-            session["admin"] = admin["username"]
-            print(f"[Auth] Admin '{admin['username']}' logged in from {request.remote_addr}.")
-            return redirect(url_for("dashboard"))
         else:
-            record_failure(key)
-            print(f"[Auth] Failed admin login from {request.remote_addr}.")
-            error = "Invalid username or password"
+            try:
+                _uid, admin_email = store.sign_in_admin(email, password)
+            except FirebaseError as e:
+                record_failure(key)
+                print(f"[Auth] Failed admin login from {request.remote_addr}.")
+                error = str(e)
+            else:
+                clear_failures(key)
+                session.clear()
+                session.permanent = True
+                session["admin"] = admin_email
+                print(f"[Auth] Admin '{admin_email}' logged in from {request.remote_addr}.")
+                return redirect(url_for("dashboard"))
     return render_template_string(LOGIN_HTML, mode="login", locked=False, error=error)
 
 @app.route("/logout", methods=["POST"])
@@ -1329,8 +1183,18 @@ def logout():
     session.clear()
     return redirect(url_for("login"))
 
-if __name__ == "__main__":
-    print("\n  TwinGuard-SHA256 — Dashboard Server")
-    print("  ─────────────────────────────────────")
+def main():
+    global store
+    try:
+        store = FirebaseStore()
+    except FirebaseNotConfigured as e:
+        print(f"\n  [Firebase] Not configured: {e}\n  See firebase/README.md for the one-time setup.\n")
+        sys.exit(1)
+    threading.Thread(target=purge_old_logs, daemon=True).start()
+    print("\n  TwinGuard-SHA256 — Dashboard Server (Firebase)")
+    print("  ───────────────────────────────────────────────")
     print("  Open: http://127.0.0.1:5000\n")
     app.run(host="0.0.0.0", port=5000, debug=False)
+
+if __name__ == "__main__":
+    main()

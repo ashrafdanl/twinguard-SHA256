@@ -11,13 +11,14 @@ Changes vs original:
 import os
 import time
 import argparse
+import getpass
 import json
 import hashlib
 import datetime
-import requests
 
 from collections import defaultdict
 from scanner import scan_networks
+from firebase_uploader import FirebaseUploader, UploaderError
 
 # ── NEW: Telegram notifier ────────────────────────────────────────────────────
 try:
@@ -42,17 +43,17 @@ except ImportError:
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
-DASHBOARD_URL   = "http://127.0.0.1:5000/api/alert"
-NETWORKS_URL    = "http://127.0.0.1:5000/api/networks"
 LOG_FILE        = "forensic_log.json"
 INTERFACE       = "wlan0"
 SCAN_INTERVAL   = 10
 SCAN_DURATION   = 8
 
-# Operator (dashboard user) this engine reports for. Set with --user, or the
-# TWINGUARD_USER env var. Alerts are tagged with it so the dashboard can show
-# each user's log separately.
-OPERATOR        = os.getenv("TWINGUARD_USER", "").strip()
+# Operator this engine reports for: their TwinGuard (Firebase) email, set with
+# --email or TWINGUARD_EMAIL. The engine signs in as that operator and uploads
+# alerts to Firebase, tagged with their uid so the dashboard and their phone
+# app show them in that operator's log.
+OPERATOR_EMAIL  = os.getenv("TWINGUARD_EMAIL", "").strip()
+OPERATOR_FIELDS = {}   # {"uid": ..., "username": ...} once signed in
 
 # Telegram — can also be set as env vars (see telegram_notifier.py)
 # Leave as empty string to use values from telegram_notifier.py / env vars.
@@ -190,8 +191,7 @@ class DetectionEngine:
                         "reasons":       reasons,
                         "timestamp":     datetime.datetime.utcnow().isoformat() + "Z",
                     }
-                    if OPERATOR:
-                        alert["username"] = OPERATOR  # inside the SHA-256 seal
+                    alert.update(OPERATOR_FIELDS)  # inside the SHA-256 seal
                     logged = self.logger.log(alert)
                     alerts.append(logged)
                     self._notify(logged)  # ← triggers all callbacks incl. Telegram
@@ -205,7 +205,7 @@ class DetectionEngine:
         print("════════════════════════════════════════════")
         print(" TwinGuard-SHA256 — Detection Engine")
         print(f" Interface : {INTERFACE}")
-        print(f" Operator  : {OPERATOR or '(none - alerts will be Unassigned)'}")
+        print(f" Operator  : {OPERATOR_FIELDS.get('username') or '(none - local log only)'}")
         print("════════════════════════════════════════════\n")
 
         scan_count = 0
@@ -251,35 +251,15 @@ class DetectionEngine:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EXISTING CALLBACKS
-# ─────────────────────────────────────────────────────────────────────────────
-
-def send_to_dashboard(alert):
-    try:
-        requests.post(DASHBOARD_URL, json=alert, timeout=2)
-    except Exception:
-        pass
-
-def send_networks_to_dashboard(networks):
-    try:
-        requests.post(
-            NETWORKS_URL,
-            json=networks,
-            timeout=2
-        )
-    except Exception as exc:
-        print(f"[Dashboard] Network update failed: {exc}")
-
-# ─────────────────────────────────────────────────────────────────────────────
 # ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="TwinGuard-SHA256 detection engine")
-    parser.add_argument("--user", default=OPERATOR,
-                        help="dashboard username to tag alerts with (default: $TWINGUARD_USER)")
-    OPERATOR = parser.parse_args().user.strip()
+    parser.add_argument("--email", default=OPERATOR_EMAIL,
+                        help="operator's TwinGuard sign-in email (default: $TWINGUARD_EMAIL)")
+    OPERATOR_EMAIL = parser.parse_args().email.strip()
 
     if os.geteuid() != 0:
         print(f"{Fore.RED}[ERROR] Run with sudo.")
@@ -292,8 +272,20 @@ if __name__ == "__main__":
     logger = ForensicLogger(LOG_FILE)
     engine = DetectionEngine(logger)
 
-    # ── Existing callback: web dashboard ─────────────────────────────────────
-    engine.on_alert(send_to_dashboard)
+    # ── Callback: upload to Firebase as the signed-in operator ───────────────
+    if OPERATOR_EMAIL:
+        password = os.getenv("TWINGUARD_PASSWORD") or getpass.getpass(f"Password for {OPERATOR_EMAIL}: ")
+        try:
+            uploader = FirebaseUploader(OPERATOR_EMAIL, password)
+        except UploaderError as e:
+            print(f"{Fore.RED}[Firebase] {e}")
+            exit(1)
+        OPERATOR_FIELDS.update(uid=uploader.uid, username=uploader.username)
+        engine.on_alert(uploader.upload)
+        print(f"{Fore.GREEN}[Firebase] ✓ Signed in as {uploader.username} — alerts go to the dashboard and app.")
+    else:
+        print(f"{Fore.YELLOW}[Firebase] No --email given: alerts are saved to {LOG_FILE} only "
+              f"and will NOT appear on the dashboard or app.")
 
     # ── NEW callback: Telegram real-time alerts ───────────────────────────────
     telegram = None

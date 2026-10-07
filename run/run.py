@@ -26,7 +26,7 @@ detector = subprocess.Popen([
     "sudo",
     PYTHON,
     os.path.join(BASE_DIR, "detection", "detection.py"),
-    *sys.argv[1:]  # e.g. --user operator01
+    *sys.argv[1:]  # e.g. --email ali@example.com
 ])
 
 try:

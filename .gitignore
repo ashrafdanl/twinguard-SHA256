@@ -22,3 +22,8 @@ twinguard_admin.json
 run/twinguard_admin.json
 twinguard_secret.key
 run/twinguard_secret.key
+
+# Firebase (never commit the service account key)
+firebase_config.json
+firebase-service-account.json
+*-firebase-adminsdk-*.json

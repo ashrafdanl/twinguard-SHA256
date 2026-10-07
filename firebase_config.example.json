@@ -1,0 +1,5 @@
+{
+  "project_id": "YOUR_FIREBASE_PROJECT_ID",
+  "web_api_key": "YOUR_WEB_API_KEY",
+  "service_account_file": "firebase-service-account.json"
+}

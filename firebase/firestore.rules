@@ -1,0 +1,56 @@
+rules_version = '2';
+
+// TwinGuard-SHA256 Firestore security rules (free Spark plan).
+// The dashboard server uses the Admin SDK, which bypasses these rules.
+// They govern the operators' phone apps and detection engines.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Operator exists and has not been disabled by the admin
+    function isActiveOperator() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && profile().enabled == true;
+    }
+
+    // Operators may read their own profile; only the admin dashboard writes profiles.
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // Sealed forensic alerts.
+    //   read:   an active operator, only their own alerts
+    //           (app queries must filter: where("uid", "==", currentUser.uid))
+    //   create: an active operator's detection engine, only as themselves,
+    //           with the SHA-256 seal as the document id
+    //   update/delete: never from clients, so the evidence cannot be altered
+    match /alerts/{alertId} {
+      allow read: if isActiveOperator() && resource.data.uid == request.auth.uid;
+
+      allow create: if isActiveOperator()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.username == profile().username
+        && request.resource.data.sha256_hash is string
+        && request.resource.data.sha256_hash.size() == 64
+        && request.resource.data.sha256_hash == alertId
+        && request.resource.data.severity in ['HIGH', 'MEDIUM', 'LOW']
+        && request.resource.data.timestamp is string;
+
+      allow update, delete: if false;
+    }
+
+    // Admin marker and anything else: server only.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
