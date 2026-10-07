@@ -621,7 +621,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
     </div>
   </div>
   <nav class="nav" id="nav">
-    <div class="nav-title">// CONSOLE</div>
+    <div class="nav-title" aria-hidden="true">&nbsp;</div>
     <a href="#overview" class="active"><span class="ico">◈</span>Overview</a>
     <a href="#threats"><span class="ico">⚠</span>Threat Log</a>
     <a href="#users"><span class="ico">👥</span>User Management</a>
