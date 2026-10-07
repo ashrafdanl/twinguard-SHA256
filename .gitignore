@@ -27,3 +27,6 @@ run/twinguard_secret.key
 firebase_config.json
 firebase-service-account.json
 *-firebase-adminsdk-*.json
+
+# Dashboard output
+dashboard.log
