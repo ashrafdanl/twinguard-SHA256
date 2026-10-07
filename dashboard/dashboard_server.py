@@ -458,7 +458,9 @@ section{margin-bottom:28px;scroll-margin-top:90px;}
   background:linear-gradient(90deg,var(--accent),transparent);}
 
 /* ── Stats ─────────────────────────────── */
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;}
+.stats-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:14px;}
+@media (max-width:1300px){.stats-grid{grid-template-columns:repeat(3,minmax(0,1fr));}}
+@media (max-width:640px){.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
 .stat-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
   padding:20px 22px;position:relative;overflow:hidden;transition:transform .2s,border-color .2s,background var(--t);}
 .stat-card:hover{transform:translateY(-2px);border-color:var(--c);box-shadow:0 6px 24px -10px var(--c);}
@@ -530,6 +532,52 @@ tr.new-row td{animation:flashRow .8s ease;}
 .empty-state{text-align:center;padding:70px 20px;color:var(--dim);font-family:var(--mono);}
 .empty-state .icon{font-size:44px;margin-bottom:14px;}
 
+/* ── Charts ────────────────────────────── */
+.stat-card.recent{--c:var(--warning);} .stat-card.nets{--c:var(--accent);}
+.stat-card.integrity{--c:var(--safe);} .stat-card.integrity.bad{--c:var(--danger);}
+.chart-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.6fr);gap:14px;margin-top:14px;}
+.chart-grid.even{grid-template-columns:minmax(0,1fr) minmax(0,1fr);}
+.chart-card{padding:18px 20px;min-width:0;}
+.chart-title{font-family:var(--mono);font-size:11px;letter-spacing:2.5px;color:var(--dim);text-transform:uppercase;
+  margin-bottom:16px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;}
+.chart-title b{color:var(--text);font-weight:400;letter-spacing:1px;}
+.donut-wrap{display:flex;align-items:center;gap:24px;flex-wrap:wrap;}
+.donut{width:180px;height:180px;flex-shrink:0;}
+.donut .ring{fill:none;stroke:color-mix(in srgb,var(--border) 55%,transparent);stroke-width:26;}
+.donut .seg{fill:none;stroke-width:26;cursor:pointer;transition:opacity .15s;}
+.donut .seg:hover,.donut .seg:focus{opacity:.78;outline:none;}
+.donut-total{font-family:var(--sans);font-size:36px;font-weight:900;fill:var(--text);}
+.donut-cap{font-family:var(--mono);font-size:10px;letter-spacing:2px;fill:var(--dim);}
+.legend{display:flex;flex-direction:column;gap:12px;flex:1;min-width:160px;}
+.lg-row{display:grid;grid-template-columns:12px 1fr auto 44px;gap:10px;align-items:center;font-size:13px;}
+.lg-sw{width:12px;height:12px;border-radius:3px;}
+.lg-val{font-weight:700;} .lg-pct{font-family:var(--mono);font-size:11px;color:var(--dim);text-align:right;}
+.legend.inline{flex-direction:row;flex-wrap:wrap;gap:18px;margin-top:10px;}
+.legend.inline .lg-row{display:flex;gap:8px;font-size:12px;color:var(--dim);}
+.svg-chart{width:100%;height:220px;display:block;overflow:visible;}
+.svg-chart .grid{stroke:color-mix(in srgb,var(--border) 70%,transparent);stroke-width:1;}
+.svg-chart .base{stroke:var(--border);stroke-width:1;}
+.svg-chart .axis{font-family:var(--mono);font-size:10px;fill:var(--dim);}
+.svg-chart .hit{fill:transparent;cursor:pointer;outline:none;}
+.svg-chart .hit:hover,.svg-chart .hit:focus{fill:var(--glow);}
+.hbars{display:flex;flex-direction:column;gap:13px;}
+.hb-row{display:grid;grid-template-columns:minmax(90px,40%) minmax(0,1fr) 36px;gap:12px;align-items:center;font-size:13px;}
+.hb-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.hb-track{height:10px;background:color-mix(in srgb,var(--border) 45%,transparent);border-radius:5px;overflow:hidden;}
+.hb-fill{height:100%;border-radius:5px;background:var(--accent);transition:width .4s ease;}
+.hb-val{font-family:var(--mono);text-align:right;}
+.chart-empty{font-family:var(--mono);font-size:12px;color:var(--dim);padding:36px 0;text-align:center;}
+.tip{position:fixed;pointer-events:none;z-index:500;background:var(--panel2);border:1px solid var(--border);
+  border-radius:6px;padding:9px 12px;min-width:120px;box-shadow:0 10px 30px rgba(0,0,0,.35);}
+.tip-title{font-family:var(--mono);font-size:10px;letter-spacing:1.5px;color:var(--dim);margin-bottom:6px;}
+.tip-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);margin-top:3px;}
+.tip-row b{color:var(--text);font-size:14px;min-width:22px;}
+.tip-key{width:10px;height:2px;border-radius:1px;}
+.sig{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;}
+.sig-bar{width:46px;height:6px;border-radius:3px;background:color-mix(in srgb,var(--border) 50%,transparent);overflow:hidden;}
+.sig-bar i{display:block;height:100%;background:var(--accent);border-radius:3px;}
+@media (max-width:1000px){.chart-grid,.chart-grid.even{grid-template-columns:minmax(0,1fr);}}
+
 /* ── Users ─────────────────────────────── */
 .user-form{padding:20px 24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;align-items:end;
   border-bottom:1px solid var(--border);}
@@ -567,6 +615,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
     <div class="nav-title">// CONSOLE</div>
     <a href="#overview" class="active"><span class="ico">◈</span>Overview</a>
     <a href="#threats"><span class="ico">⚠</span>Threat Log</a>
+    <a href="#networks"><span class="ico">📡</span>Live Networks</a>
     <a href="#users"><span class="ico">👥</span>User Management</a>
     <a href="#settings"><span class="ico">⚙</span>Settings</a>
   </nav>
@@ -593,12 +642,38 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
   <section id="overview">
     <div class="sec-head"><div class="sec-title">Threat Overview</div><div class="sec-note">auto-refresh 10s</div></div>
     <div class="stats-grid">
-      <div class="stat-card total"><div class="stat-label">Total Alerts</div><div class="stat-value" id="stat-total">0</div></div>
-      <div class="stat-card high"><div class="stat-label">High Severity</div><div class="stat-value" id="stat-high">0</div></div>
-      <div class="stat-card medium"><div class="stat-label">Medium Severity</div><div class="stat-value" id="stat-med">0</div></div>
-      <div class="stat-card low"><div class="stat-label">Low Severity</div><div class="stat-value" id="stat-low">0</div></div>
+      <div class="stat-card total"><div class="stat-label">Total Alerts</div><div class="stat-value" id="stat-total">0</div><div class="stat-sub">in retention window</div></div>
+      <div class="stat-card recent"><div class="stat-label">Alerts (24h)</div><div class="stat-value" id="stat-24h">0</div><div class="stat-sub">last 24 hours</div></div>
+      <div class="stat-card integrity" id="card-integrity"><div class="stat-label">Log Integrity</div><div class="stat-value" id="stat-integrity">—</div><div class="stat-sub" id="stat-integrity-sub">no entries</div></div>
+      <div class="stat-card nets"><div class="stat-label">Networks Seen</div><div class="stat-value" id="stat-nets">0</div><div class="stat-sub" id="stat-nets-sub">no scan yet</div></div>
       <div class="stat-card users"><div class="stat-label">Total Users</div><div class="stat-value" id="stat-users">0</div><div class="stat-sub">registered operators</div></div>
       <div class="stat-card active"><div class="stat-label">Active Users</div><div class="stat-value" id="stat-active">0</div><div class="stat-sub">accounts enabled</div></div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="panel chart-card">
+        <div class="chart-title">Severity Distribution</div>
+        <div class="donut-wrap">
+          <svg class="donut" id="sev-donut" viewBox="0 0 200 200" role="img" aria-label="Alerts by severity"></svg>
+          <div class="legend" id="sev-legend"></div>
+        </div>
+      </div>
+      <div class="panel chart-card">
+        <div class="chart-title">Alerts · Last 14 Days (UTC) <b id="trend-sum"></b></div>
+        <svg class="svg-chart" id="trend-chart" role="img" aria-label="Daily alerts by severity over the last 14 days"></svg>
+        <div class="legend inline" id="trend-legend"></div>
+      </div>
+    </div>
+
+    <div class="chart-grid even">
+      <div class="panel chart-card">
+        <div class="chart-title">Detection Reasons <b>alerts triggering each rule</b></div>
+        <div class="hbars" id="reason-bars"></div>
+      </div>
+      <div class="panel chart-card">
+        <div class="chart-title">Most Targeted SSIDs <b>top 6</b></div>
+        <div class="hbars" id="ssid-bars"></div>
+      </div>
     </div>
   </section>
 
@@ -618,6 +693,18 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
         </tr></thead>
         <tbody id="log-body">
           <tr><td colspan="8" class="empty-state"><div class="icon">📡</div>Waiting for detections...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="networks">
+    <div class="sec-head"><div class="sec-title">Live Networks</div><div class="sec-note" id="net-scan">last scan: —</div></div>
+    <div class="panel table-wrap">
+      <table>
+        <thead><tr><th>SSID</th><th>BSSID</th><th>Signal</th><th>Channel</th><th>Encryption</th><th>Status</th></tr></thead>
+        <tbody id="net-body">
+          <tr><td colspan="6" class="empty-state"><div class="icon">📡</div>Waiting for the first scan...</td></tr>
         </tbody>
       </table>
     </div>
@@ -661,6 +748,8 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
     </div>
   </section>
 </main>
+
+<div class="tip" id="tip" hidden></div>
 
 <footer>TwinGuard-SHA256 &nbsp;|&nbsp; GMI Final Year Project JAN 2026 &nbsp;|&nbsp; SEM 4 DCBS 6</footer>
 </div>
@@ -732,13 +821,12 @@ async function loadData() {
     const stats = await sr.json();
     allLogs     = await lr.json();
     document.getElementById('stat-total').textContent  = stats.total_alerts;
-    document.getElementById('stat-high').textContent   = stats.high;
-    document.getElementById('stat-med').textContent    = stats.medium;
-    document.getElementById('stat-low').textContent    = stats.low;
     document.getElementById('stat-users').textContent  = stats.total_users;
     document.getElementById('stat-active').textContent = stats.active_users;
     renderTable(allLogs.slice().reverse(), allLogs.length > prevCount);
     prevCount = allLogs.length;
+    renderCharts(allLogs);
+    loadNetworks();
   } catch(e) {
     document.getElementById('log-body').innerHTML =
       '<tr><td colspan="8" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
@@ -784,6 +872,227 @@ function exportLogs() {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(allLogs,null,2)],{type:'application/json'}));
   a.download = 'twinguard_forensic_log.json'; a.click();
+}
+
+// ── Charts ─────────────────────────────────────
+const SEV = [
+  {key:'HIGH',   label:'High',   color:'var(--danger)'},
+  {key:'MEDIUM', label:'Medium', color:'var(--warning)'},
+  {key:'LOW',    label:'Low',    color:'var(--safe)'},
+];
+const KNOWN_REASONS = ['Unknown BSSID','Open encryption','Multiple APs with same SSID','Signal anomaly','Channel mismatch'];
+const NS = 'http://www.w3.org/2000/svg';
+const sevOf = l => ['HIGH','MEDIUM','LOW'].includes(l.severity) ? l.severity : 'LOW';
+
+function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+function htmlEl(tag, cls, text) {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+// Tooltip: rows = [{color, value, label}], built with textContent only
+const tip = document.getElementById('tip');
+function showTip(x, y, title, rows) {
+  tip.replaceChildren();
+  if (title) tip.append(htmlEl('div', 'tip-title', title));
+  rows.forEach(r => {
+    const row = htmlEl('div', 'tip-row'), key = htmlEl('span', 'tip-key');
+    key.style.background = r.color;
+    row.append(key, htmlEl('b', '', r.value), document.createTextNode(r.label));
+    tip.append(row);
+  });
+  tip.hidden = false;
+  const b = tip.getBoundingClientRect();
+  tip.style.left = Math.min(x + 14, innerWidth - b.width - 8) + 'px';
+  tip.style.top  = Math.min(y + 14, innerHeight - b.height - 8) + 'px';
+}
+function hideTip() { tip.hidden = true; }
+function bindTip(el, title, rows) {
+  el.setAttribute('tabindex', '0');
+  el.addEventListener('pointermove', e => showTip(e.clientX, e.clientY, title, rows));
+  el.addEventListener('pointerleave', hideTip);
+  el.addEventListener('focus', () => { const r = el.getBoundingClientRect(); showTip(r.right, r.top, title, rows); });
+  el.addEventListener('blur', hideTip);
+}
+
+function renderDonut(logs) {
+  const svg = document.getElementById('sev-donut'), legend = document.getElementById('sev-legend');
+  const counts = SEV.map(s => logs.filter(l => sevOf(l) === s.key).length);
+  const total  = counts.reduce((a, b) => a + b, 0);
+  const R = 80, C = 2 * Math.PI * R, GAP = 3, nonZero = counts.filter(Boolean).length;
+  svg.replaceChildren(svgEl('circle', {cx:100, cy:100, r:R, class:'ring'}));
+  legend.replaceChildren();
+  let offset = 0;
+  SEV.forEach((s, i) => {
+    const pct = total ? Math.round(counts[i] / total * 100) : 0;
+    if (counts[i]) {
+      const len  = counts[i] / total * C;
+      const draw = nonZero > 1 ? Math.max(len - GAP, 1) : len;
+      const seg  = svgEl('circle', {cx:100, cy:100, r:R, class:'seg',
+        'stroke-dasharray': `${draw} ${C - draw}`, 'stroke-dashoffset': -offset,
+        transform: 'rotate(-90 100 100)', 'aria-label': `${s.label}: ${counts[i]}`});
+      seg.style.stroke = s.color;
+      bindTip(seg, null, [{color:s.color, value:counts[i], label:`${s.label} severity · ${pct}%`}]);
+      svg.append(seg);
+      offset += len;
+    }
+    const row = htmlEl('div', 'lg-row'), sw = htmlEl('span', 'lg-sw');
+    sw.style.background = s.color;
+    row.append(sw, htmlEl('span', '', s.label), htmlEl('span', 'lg-val', counts[i]), htmlEl('span', 'lg-pct', total ? pct + '%' : '—'));
+    legend.append(row);
+  });
+  const t = svgEl('text', {x:100, y:104, 'text-anchor':'middle', class:'donut-total'}); t.textContent = total;
+  const c = svgEl('text', {x:100, y:126, 'text-anchor':'middle', class:'donut-cap'}); c.textContent = 'ALERTS';
+  svg.append(t, c);
+}
+
+function barPath(x, y, w, h, r) {
+  r = Math.min(r, h, w / 2);
+  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+}
+
+function renderTrend(logs) {
+  const svg = document.getElementById('trend-chart');
+  const W = Math.max(svg.clientWidth, 280), H = 220, pad = {l:32, r:6, t:10, b:24};
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.replaceChildren();
+
+  const now = new Date(), days = [];
+  for (let i = 13; i >= 0; i--)
+    days.push(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i)).toISOString().slice(0, 10));
+  const buckets = Object.fromEntries(days.map(d => [d, {HIGH:0, MEDIUM:0, LOW:0}]));
+  logs.forEach(l => { const d = String(l.timestamp || '').slice(0, 10); if (buckets[d]) buckets[d][sevOf(l)]++; });
+  const totals = days.map(d => SEV.reduce((a, s) => a + buckets[d][s.key], 0));
+  const sum = totals.reduce((a, b) => a + b, 0);
+  document.getElementById('trend-sum').textContent = `${sum} total`;
+
+  const max = Math.max(...totals), top = max <= 4 ? 4 : Math.ceil(max / 4) * 4;
+  const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b, base = pad.t + ph;
+  [0, top / 2, top].forEach(v => {
+    const y = base - v / top * ph;
+    svg.append(svgEl('line', {x1:pad.l, x2:W - pad.r, y1:y, y2:y, class: v ? 'grid' : 'base'}));
+    const lbl = svgEl('text', {x:pad.l - 8, y:y + 3, 'text-anchor':'end', class:'axis'}); lbl.textContent = v;
+    svg.append(lbl);
+  });
+
+  const step = pw / days.length, bw = Math.max(4, Math.min(26, step * 0.58));
+  const labelEvery = step < 34 ? 3 : 2;
+  days.forEach((d, i) => {
+    const x = pad.l + i * step + (step - bw) / 2;
+    const segs = SEV.filter(s => buckets[d][s.key]);
+    let y = base;
+    segs.forEach((s, j) => {
+      const h = buckets[d][s.key] / top * ph, gap = j ? 2 : 0;
+      y -= h;
+      const p = svgEl('path', {d: barPath(x, y + gap, bw, Math.max(h - gap, 1), j === segs.length - 1 ? 4 : 0)});
+      p.style.fill = s.color;
+      svg.append(p);
+    });
+    if ((days.length - 1 - i) % labelEvery === 0) {
+      const lbl = svgEl('text', {x:pad.l + i * step + step / 2, y:H - 6, 'text-anchor':'middle', class:'axis'});
+      lbl.textContent = d.slice(5);
+      svg.append(lbl);
+    }
+    // Whole-column hit target: one tooltip lists every severity for that day
+    const hit = svgEl('rect', {x:pad.l + i * step, y:pad.t, width:step, height:ph, class:'hit', 'aria-label': `${d}: ${totals[i]} alerts`});
+    bindTip(hit, `${d} · ${totals[i]} alert${totals[i] === 1 ? '' : 's'}`,
+      SEV.map(s => ({color:s.color, value:buckets[d][s.key], label:s.label})));
+    svg.append(hit);
+  });
+
+  const legend = document.getElementById('trend-legend');
+  legend.replaceChildren(...SEV.map(s => {
+    const row = htmlEl('div', 'lg-row'), sw = htmlEl('span', 'lg-sw');
+    sw.style.background = s.color;
+    row.append(sw, document.createTextNode(s.label));
+    return row;
+  }));
+}
+
+function renderHBars(id, entries, emptyMsg) {
+  const box = document.getElementById(id);
+  box.replaceChildren();
+  const max = Math.max(0, ...entries.map(e => e[1]));
+  if (!max) { box.append(htmlEl('div', 'chart-empty', emptyMsg)); return; }
+  entries.forEach(([label, n]) => {
+    const row = htmlEl('div', 'hb-row'), track = htmlEl('div', 'hb-track'), fill = htmlEl('div', 'hb-fill');
+    fill.style.width = (n / max * 100) + '%';
+    track.append(fill);
+    const lbl = htmlEl('span', 'hb-label', label); lbl.title = label;
+    row.append(lbl, track, htmlEl('span', 'hb-val', n));
+    box.append(row);
+  });
+}
+
+function renderStats(logs) {
+  const dayAgo = Date.now() - 864e5;
+  document.getElementById('stat-24h').textContent =
+    logs.filter(l => { const t = Date.parse(l.timestamp); return !isNaN(t) && t >= dayAgo; }).length;
+  const valid = logs.filter(l => l.integrity_ok === true).length, bad = logs.length - valid;
+  document.getElementById('stat-integrity').textContent = logs.length ? Math.floor(valid / logs.length * 100) + '%' : '—';
+  document.getElementById('stat-integrity-sub').textContent = logs.length ? `${valid} valid · ${bad} tampered` : 'no entries';
+  document.getElementById('card-integrity').classList.toggle('bad', bad > 0);
+}
+
+function renderCharts(logs) {
+  hideTip();
+  renderStats(logs);
+  renderDonut(logs);
+  renderTrend(logs);
+
+  const reasons = Object.fromEntries(KNOWN_REASONS.map(r => [r, 0]));
+  logs.forEach(l => (Array.isArray(l.reasons) ? l.reasons : []).forEach(r => { r = String(r); reasons[r] = (reasons[r] || 0) + 1; }));
+  renderHBars('reason-bars', Object.entries(reasons).sort((a, b) => b[1] - a[1]), 'No detections yet');
+
+  const ssids = {};
+  logs.forEach(l => { const k = String(l.ssid || '?'); ssids[k] = (ssids[k] || 0) + 1; });
+  renderHBars('ssid-bars', Object.entries(ssids).sort((a, b) => b[1] - a[1]).slice(0, 6), 'No targeted SSIDs yet');
+}
+
+let resizeTimer;
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => renderTrend(allLogs), 150); });
+
+// ── Live networks ──────────────────────────────
+function timeAgo(iso) {
+  const s = Math.round((Date.now() - Date.parse(iso)) / 1000);
+  if (isNaN(s)) return '—';
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
+}
+
+async function loadNetworks() {
+  try {
+    const d = await (await fetch('/api/networks')).json();
+    const nets = Array.isArray(d.networks) ? d.networks : [];
+    document.getElementById('stat-nets').textContent = nets.length;
+    document.getElementById('stat-nets-sub').textContent = d.last_scan ? `last scan ${timeAgo(d.last_scan)}` : 'no scan yet';
+    document.getElementById('net-scan').textContent = d.last_scan ? `last scan: ${fmtTs(d.last_scan)} UTC` : 'last scan: —';
+    const tbody = document.getElementById('net-body');
+    if (!nets.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><div class="icon">📡</div>Waiting for the first scan...</td></tr>';
+      return;
+    }
+    const flagged = new Set(allLogs.map(l => String(l.bssid || '').toLowerCase()));
+    tbody.innerHTML = nets.slice().sort((a, b) => (b.signal ?? -100) - (a.signal ?? -100)).map(n => {
+      const sig = Number(n.signal), pct = isNaN(sig) ? 0 : Math.max(0, Math.min(100, (sig + 100) * 100 / 70));
+      const isFlagged = flagged.has(String(n.bssid || '').toLowerCase());
+      return `<tr>
+        <td><strong>${esc(n.ssid || '(hidden)')}</strong></td>
+        <td class="bssid">${esc(n.bssid || '?')}</td>
+        <td><span class="sig"><span class="sig-bar"><i style="width:${pct}%"></i></span>${isNaN(sig) ? '?' : sig} dBm</span></td>
+        <td>${esc(n.channel ?? '?')}</td>
+        <td>${esc(n.encryption || '?')}</td>
+        <td>${isFlagged ? '<span class="badge HIGH">⚠ FLAGGED</span>' : '<span class="badge on">✓ CLEAR</span>'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {}
 }
 
 // ── Users ──────────────────────────────────────
