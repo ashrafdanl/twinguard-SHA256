@@ -14,3 +14,11 @@ run/forensic_log.json
 # Environment/secrets
 .env
 
+
+# User accounts (contain password hashes)
+twinguard_users.json
+run/twinguard_users.json
+twinguard_admin.json
+run/twinguard_admin.json
+twinguard_secret.key
+run/twinguard_secret.key
