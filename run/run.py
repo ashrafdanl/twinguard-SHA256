@@ -7,6 +7,7 @@ import time
 
 import os
 import subprocess
+import sys
 import time
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,7 +25,8 @@ time.sleep(2)
 detector = subprocess.Popen([
     "sudo",
     PYTHON,
-    os.path.join(BASE_DIR, "detection", "detection.py")
+    os.path.join(BASE_DIR, "detection", "detection.py"),
+    *sys.argv[1:]  # e.g. --user operator01
 ])
 
 try:

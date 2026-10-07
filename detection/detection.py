@@ -10,6 +10,7 @@ Changes vs original:
 
 import os
 import time
+import argparse
 import json
 import hashlib
 import datetime
@@ -47,6 +48,11 @@ LOG_FILE        = "forensic_log.json"
 INTERFACE       = "wlan0"
 SCAN_INTERVAL   = 10
 SCAN_DURATION   = 8
+
+# Operator (dashboard user) this engine reports for. Set with --user, or the
+# TWINGUARD_USER env var. Alerts are tagged with it so the dashboard can show
+# each user's log separately.
+OPERATOR        = os.getenv("TWINGUARD_USER", "").strip()
 
 # Telegram — can also be set as env vars (see telegram_notifier.py)
 # Leave as empty string to use values from telegram_notifier.py / env vars.
@@ -184,6 +190,8 @@ class DetectionEngine:
                         "reasons":       reasons,
                         "timestamp":     datetime.datetime.utcnow().isoformat() + "Z",
                     }
+                    if OPERATOR:
+                        alert["username"] = OPERATOR  # inside the SHA-256 seal
                     logged = self.logger.log(alert)
                     alerts.append(logged)
                     self._notify(logged)  # ← triggers all callbacks incl. Telegram
@@ -197,6 +205,7 @@ class DetectionEngine:
         print("════════════════════════════════════════════")
         print(" TwinGuard-SHA256 — Detection Engine")
         print(f" Interface : {INTERFACE}")
+        print(f" Operator  : {OPERATOR or '(none - alerts will be Unassigned)'}")
         print("════════════════════════════════════════════\n")
 
         scan_count = 0
@@ -266,6 +275,11 @@ def send_networks_to_dashboard(networks):
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description="TwinGuard-SHA256 detection engine")
+    parser.add_argument("--user", default=OPERATOR,
+                        help="dashboard username to tag alerts with (default: $TWINGUARD_USER)")
+    OPERATOR = parser.parse_args().user.strip()
 
     if os.geteuid() != 0:
         print(f"{Fore.RED}[ERROR] Run with sudo.")

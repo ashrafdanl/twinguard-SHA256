@@ -533,7 +533,7 @@ tr.new-row td{animation:flashRow .8s ease;}
 .empty-state .icon{font-size:44px;margin-bottom:14px;}
 
 /* ── Charts ────────────────────────────── */
-.stat-card.recent{--c:var(--warning);} .stat-card.nets{--c:var(--accent);}
+.stat-card.recent{--c:var(--warning);}
 .stat-card.integrity{--c:var(--safe);} .stat-card.integrity.bad{--c:var(--danger);}
 .chart-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.6fr);gap:14px;margin-top:14px;}
 .chart-grid.even{grid-template-columns:minmax(0,1fr) minmax(0,1fr);}
@@ -573,9 +573,17 @@ tr.new-row td{animation:flashRow .8s ease;}
 .tip-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);margin-top:3px;}
 .tip-row b{color:var(--text);font-size:14px;min-width:22px;}
 .tip-key{width:10px;height:2px;border-radius:1px;}
-.sig{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;}
-.sig-bar{width:46px;height:6px;border-radius:3px;background:color-mix(in srgb,var(--border) 50%,transparent);overflow:hidden;}
-.sig-bar i{display:block;height:100%;background:var(--accent);border-radius:3px;}
+.user-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+.utab{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:8px;border:1px solid var(--border);
+  background:var(--panel);color:var(--dim);font-family:var(--sans);font-size:13px;font-weight:500;cursor:pointer;transition:all .2s;}
+.utab:hover{color:var(--text);border-color:var(--accent);}
+.utab.active{color:var(--accent);border-color:var(--accent);background:var(--glow);box-shadow:inset 0 -2px 0 var(--accent);}
+.utab.off .uname-t{text-decoration:line-through;opacity:.7;}
+.utab .cnt{font-family:var(--mono);font-size:11px;padding:1px 7px;border-radius:10px;
+  background:color-mix(in srgb,var(--danger) 15%,transparent);color:var(--danger);}
+.utab .cnt.zero{background:color-mix(in srgb,var(--dim) 15%,transparent);color:var(--dim);}
+.log-owner{font-family:var(--mono);font-size:12px;color:var(--dim);margin-bottom:10px;}
+.log-owner b{color:var(--text);font-weight:400;}
 @media (max-width:1000px){.chart-grid,.chart-grid.even{grid-template-columns:minmax(0,1fr);}}
 
 /* ── Users ─────────────────────────────── */
@@ -587,6 +595,7 @@ tr.new-row td{animation:flashRow .8s ease;}
 .form-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
 .uname{font-weight:700;} .umeta{font-size:12px;color:var(--dim);}
 tr.disabled td{opacity:.6;} tr.disabled td:last-child{opacity:1;}
+.row-actions{white-space:nowrap;} .row-actions .btn+.btn{margin-left:6px;}
 
 footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;color:var(--dim);
   border-top:1px solid var(--border);margin-top:auto;}
@@ -615,7 +624,6 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
     <div class="nav-title">// CONSOLE</div>
     <a href="#overview" class="active"><span class="ico">◈</span>Overview</a>
     <a href="#threats"><span class="ico">⚠</span>Threat Log</a>
-    <a href="#networks"><span class="ico">📡</span>Live Networks</a>
     <a href="#users"><span class="ico">👥</span>User Management</a>
     <a href="#settings"><span class="ico">⚙</span>Settings</a>
   </nav>
@@ -645,7 +653,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
       <div class="stat-card total"><div class="stat-label">Total Alerts</div><div class="stat-value" id="stat-total">0</div><div class="stat-sub">in retention window</div></div>
       <div class="stat-card recent"><div class="stat-label">Alerts (24h)</div><div class="stat-value" id="stat-24h">0</div><div class="stat-sub">last 24 hours</div></div>
       <div class="stat-card integrity" id="card-integrity"><div class="stat-label">Log Integrity</div><div class="stat-value" id="stat-integrity">—</div><div class="stat-sub" id="stat-integrity-sub">no entries</div></div>
-      <div class="stat-card nets"><div class="stat-label">Networks Seen</div><div class="stat-value" id="stat-nets">0</div><div class="stat-sub" id="stat-nets-sub">no scan yet</div></div>
+      <div class="stat-card high"><div class="stat-label">High Severity</div><div class="stat-value" id="stat-high">0</div><div class="stat-sub">shown in threat log</div></div>
       <div class="stat-card users"><div class="stat-label">Total Users</div><div class="stat-value" id="stat-users">0</div><div class="stat-sub">registered operators</div></div>
       <div class="stat-card active"><div class="stat-label">Active Users</div><div class="stat-value" id="stat-active">0</div><div class="stat-sub">accounts enabled</div></div>
     </div>
@@ -678,13 +686,15 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
   </section>
 
   <section id="threats">
-    <div class="sec-head"><div class="sec-title">Threat Log</div><div class="sec-note">SHA-256 sealed forensic entries</div></div>
+    <div class="sec-head"><div class="sec-title">Threat Log</div><div class="sec-note">HIGH severity only · one log per user · SHA-256 sealed</div></div>
     <div class="refresh-bar"><div class="refresh-fill" id="rfill"></div></div>
     <div class="controls">
       <button class="btn primary" onclick="loadData()">↻ Refresh</button>
       <input class="search" id="search" type="text" placeholder="Filter by SSID or BSSID..." oninput="filterTable()">
       <button class="btn" onclick="exportLogs()">⬇ Export JSON</button>
     </div>
+    <div class="user-tabs" id="user-tabs" role="tablist" aria-label="Threat log by user"></div>
+    <div class="log-owner" id="log-owner"></div>
     <div class="panel table-wrap">
       <table>
         <thead><tr>
@@ -693,18 +703,6 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
         </tr></thead>
         <tbody id="log-body">
           <tr><td colspan="8" class="empty-state"><div class="icon">📡</div>Waiting for detections...</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <section id="networks">
-    <div class="sec-head"><div class="sec-title">Live Networks</div><div class="sec-note" id="net-scan">last scan: —</div></div>
-    <div class="panel table-wrap">
-      <table>
-        <thead><tr><th>SSID</th><th>BSSID</th><th>Signal</th><th>Channel</th><th>Encryption</th><th>Status</th></tr></thead>
-        <tbody id="net-body">
-          <tr><td colspan="6" class="empty-state"><div class="icon">📡</div>Waiting for the first scan...</td></tr>
         </tbody>
       </table>
     </div>
@@ -755,7 +753,8 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
 </div>
 
 <script>
-let allLogs = [], prevCount = 0;
+let allLogs = [], allUsers = [], activeTab = null, prevCounts = {};
+const UNASSIGNED = '__unassigned__';
 
 // ── Session guard: any 401 means the admin session expired ──
 const _fetch = window.fetch.bind(window);
@@ -821,22 +820,21 @@ async function loadData() {
     const stats = await sr.json();
     allLogs     = await lr.json();
     document.getElementById('stat-total').textContent  = stats.total_alerts;
+    document.getElementById('stat-high').textContent   = stats.high;
     document.getElementById('stat-users').textContent  = stats.total_users;
     document.getElementById('stat-active').textContent = stats.active_users;
-    renderTable(allLogs.slice().reverse(), allLogs.length > prevCount);
-    prevCount = allLogs.length;
+    renderThreatLog();
     renderCharts(allLogs);
-    loadNetworks();
   } catch(e) {
     document.getElementById('log-body').innerHTML =
       '<tr><td colspan="8" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
   }
 }
 
-function renderTable(logs, highlight=false) {
+function renderTable(logs, highlight=false, emptyMsg='No high-severity alerts.') {
   const tbody = document.getElementById('log-body');
   if (!logs.length) {
-    tbody.innerHTML='<tr><td colspan="8" class="empty-state"><div class="icon">✅</div>No rogue APs detected yet.</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-state"><div class="icon">✅</div>${esc(emptyMsg)}</td></tr>`;
     return;
   }
   tbody.innerHTML = logs.map((l,i) => {
@@ -861,11 +859,54 @@ function renderTable(logs, highlight=false) {
   }).join('');
 }
 
-function filterTable() {
+// Each alert belongs to the registered user named in its "username" field;
+// anything else (no user, or a user that no longer exists) is Unassigned.
+function ownerKey(l) {
+  const u = String(l.username || '').toLowerCase();
+  return u && allUsers.some(x => x.username.toLowerCase() === u) ? u : UNASSIGNED;
+}
+
+function renderThreatLog() {
+  const groups = {};
+  allLogs.filter(l => l.severity === 'HIGH').forEach(l => (groups[ownerKey(l)] ||= []).push(l));
+
+  const tabs = allUsers.map(u => ({key: u.username.toLowerCase(), label: u.username, enabled: u.enabled}));
+  if ((groups[UNASSIGNED] || []).length || !tabs.length) tabs.push({key: UNASSIGNED, label: 'Unassigned', enabled: true});
+  if (!tabs.some(t => t.key === activeTab)) activeTab = tabs[0].key;
+
+  const bar = document.getElementById('user-tabs');
+  bar.replaceChildren(...tabs.map(t => {
+    const n = (groups[t.key] || []).length;
+    const btn = htmlEl('button', 'utab' + (t.key === activeTab ? ' active' : '') + (t.enabled ? '' : ' off'));
+    btn.type = 'button';
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', t.key === activeTab);
+    btn.append(htmlEl('span', 'uname-t', (t.key === UNASSIGNED ? '◌ ' : '👤 ') + t.label), htmlEl('span', 'cnt' + (n ? '' : ' zero'), n));
+    btn.addEventListener('click', () => { activeTab = t.key; renderThreatLog(); });
+    return btn;
+  }));
+
+  const current = tabs.find(t => t.key === activeTab);
+  const mine    = groups[activeTab] || [];
+  const owner   = document.getElementById('log-owner');
+  owner.replaceChildren(document.createTextNode('Viewing log of '), htmlEl('b', '', current.label),
+    document.createTextNode(` · ${mine.length} high-severity alert${mine.length === 1 ? '' : 's'}` +
+      (current.key === UNASSIGNED ? ' not tied to any registered user' : (current.enabled ? '' : ' · account disabled'))));
+
   const q = document.getElementById('search').value.toLowerCase();
-  renderTable(allLogs.filter(l =>
-    (l.ssid||'').toLowerCase().includes(q)||(l.bssid||'').toLowerCase().includes(q)
-  ).slice().reverse());
+  const rows = mine.filter(l => String(l.ssid || '').toLowerCase().includes(q) || String(l.bssid || '').toLowerCase().includes(q));
+  const highlight = prevCounts[activeTab] !== undefined && mine.length > prevCounts[activeTab];
+  prevCounts = Object.fromEntries(tabs.map(t => [t.key, (groups[t.key] || []).length]));
+  renderTable(rows.slice().reverse(), highlight,
+    q ? 'No matching alerts.' : `No high-severity alerts for ${current.label}.`);
+}
+
+function filterTable() { renderThreatLog(); }
+
+function openUserLog(key) {
+  activeTab = key;
+  renderThreatLog();
+  document.getElementById('threats').scrollIntoView();
 }
 
 function exportLogs() {
@@ -1058,48 +1099,13 @@ function renderCharts(logs) {
 let resizeTimer;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => renderTrend(allLogs), 150); });
 
-// ── Live networks ──────────────────────────────
-function timeAgo(iso) {
-  const s = Math.round((Date.now() - Date.parse(iso)) / 1000);
-  if (isNaN(s)) return '—';
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  return `${Math.floor(s / 3600)}h ago`;
-}
-
-async function loadNetworks() {
-  try {
-    const d = await (await fetch('/api/networks')).json();
-    const nets = Array.isArray(d.networks) ? d.networks : [];
-    document.getElementById('stat-nets').textContent = nets.length;
-    document.getElementById('stat-nets-sub').textContent = d.last_scan ? `last scan ${timeAgo(d.last_scan)}` : 'no scan yet';
-    document.getElementById('net-scan').textContent = d.last_scan ? `last scan: ${fmtTs(d.last_scan)} UTC` : 'last scan: —';
-    const tbody = document.getElementById('net-body');
-    if (!nets.length) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><div class="icon">📡</div>Waiting for the first scan...</td></tr>';
-      return;
-    }
-    const flagged = new Set(allLogs.map(l => String(l.bssid || '').toLowerCase()));
-    tbody.innerHTML = nets.slice().sort((a, b) => (b.signal ?? -100) - (a.signal ?? -100)).map(n => {
-      const sig = Number(n.signal), pct = isNaN(sig) ? 0 : Math.max(0, Math.min(100, (sig + 100) * 100 / 70));
-      const isFlagged = flagged.has(String(n.bssid || '').toLowerCase());
-      return `<tr>
-        <td><strong>${esc(n.ssid || '(hidden)')}</strong></td>
-        <td class="bssid">${esc(n.bssid || '?')}</td>
-        <td><span class="sig"><span class="sig-bar"><i style="width:${pct}%"></i></span>${isNaN(sig) ? '?' : sig} dBm</span></td>
-        <td>${esc(n.channel ?? '?')}</td>
-        <td>${esc(n.encryption || '?')}</td>
-        <td>${isFlagged ? '<span class="badge HIGH">⚠ FLAGGED</span>' : '<span class="badge on">✓ CLEAR</span>'}</td>
-      </tr>`;
-    }).join('');
-  } catch(e) {}
-}
-
 // ── Users ──────────────────────────────────────
 async function loadUsers() {
   const tbody = document.getElementById('user-body');
   try {
     const users = await (await fetch('/api/users')).json();
+    allUsers = users;
+    renderThreatLog();
     document.getElementById('stat-users').textContent  = users.length;
     document.getElementById('stat-active').textContent = users.filter(u => u.enabled).length;
     if (!users.length) {
@@ -1113,7 +1119,9 @@ async function loadUsers() {
       <td><span class="badge ${u.enabled ? 'on' : 'off'}">${u.enabled ? 'ENABLED' : 'DISABLED'}</span></td>
       <td class="ts">${fmtTs(u.created_at)}</td>
       <td class="ts">${fmtTs(u.last_login)}</td>
-      <td>${u.enabled
+      <td class="row-actions">
+        <button class="btn sm" data-user="${esc(u.username.toLowerCase())}" onclick="openUserLog(this.dataset.user)">📄 View Log</button>
+        ${u.enabled
         ? `<button class="btn sm danger" onclick="setUserStatus('${esc(u.id)}', false)">Disable</button>`
         : `<button class="btn sm enable" onclick="setUserStatus('${esc(u.id)}', true)">Enable</button>`}</td>
     </tr>`).join('');
