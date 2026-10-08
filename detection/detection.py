@@ -19,6 +19,7 @@ import datetime
 from collections import defaultdict
 from scanner import scan_networks
 from firebase_uploader import FirebaseUploader, UploaderError
+from simulator import ScanSimulator
 
 # ── NEW: Telegram notifier ────────────────────────────────────────────────────
 try:
@@ -44,7 +45,9 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 
 LOG_FILE        = "forensic_log.json"
-INTERFACE       = "wlan0"
+SIM_LOG_FILE    = "forensic_log_simulated.json"   # simulated alerts never mix with real evidence
+INTERFACE       = os.getenv("TWINGUARD_INTERFACE", "wlan0")   # or --interface
+SIMULATOR       = None                            # ScanSimulator when run with --simulate
 SCAN_INTERVAL   = 10
 SCAN_DURATION   = 8
 
@@ -114,6 +117,9 @@ class DetectionEngine:
                 print(f"[DetectionEngine] Callback error: {exc}")
 
     def _scan(self):
+        if SIMULATOR:
+            time.sleep(2)
+            return SIMULATOR.scan()
         return scan_networks(interface=INTERFACE, duration=SCAN_DURATION)
 
     # ── Scoring ───────────────────────────────────────────────────────────────
@@ -155,7 +161,8 @@ class DetectionEngine:
                     score += 2
                     reasons.append("Unknown BSSID")
 
-                if encryption.lower() == "open":
+                # airodump-ng reports open networks as "OPN"
+                if (encryption.split() or [""])[0].upper() in ("OPN", "OPEN"):
                     score += 2
                     reasons.append("Open encryption")
 
@@ -192,6 +199,8 @@ class DetectionEngine:
                         "timestamp":     datetime.datetime.utcnow().isoformat() + "Z",
                     }
                     alert.update(OPERATOR_FIELDS)  # inside the SHA-256 seal
+                    if SIMULATOR:
+                        alert["simulated"] = True  # sealed too: can't be passed off as real
                     logged = self.logger.log(alert)
                     alerts.append(logged)
                     self._notify(logged)  # ← triggers all callbacks incl. Telegram
@@ -204,7 +213,7 @@ class DetectionEngine:
         print(f"\n{Fore.CYAN}{Style.BRIGHT}")
         print("════════════════════════════════════════════")
         print(" TwinGuard-SHA256 — Detection Engine")
-        print(f" Interface : {INTERFACE}")
+        print(f" Interface : {'SIMULATED (no adapter)' if SIMULATOR else INTERFACE}")
         print(f" Operator  : {OPERATOR_FIELDS.get('username') or '(none - local log only)'}")
         print("════════════════════════════════════════════\n")
 
@@ -259,15 +268,30 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TwinGuard-SHA256 detection engine")
     parser.add_argument("--email", default=OPERATOR_EMAIL,
                         help="operator's TwinGuard sign-in email (default: $TWINGUARD_EMAIL)")
-    OPERATOR_EMAIL = parser.parse_args().email.strip()
+    parser.add_argument("--interface", default=INTERFACE,
+                        help="monitor-mode Wi-Fi interface (default: $TWINGUARD_INTERFACE or wlan0; "
+                             "on a Raspberry Pi the USB adapter is usually wlan1)")
+    parser.add_argument("--simulate", action="store_true",
+                        help="use simulated scans instead of a Wi-Fi adapter (alerts are marked simulated)")
+    args = parser.parse_args()
+    OPERATOR_EMAIL, INTERFACE = args.email.strip(), args.interface.strip()
 
-    if os.geteuid() != 0:
-        print(f"{Fore.RED}[ERROR] Run with sudo.")
-        exit(1)
+    if args.simulate:
+        SIMULATOR = ScanSimulator()
+        LOG_FILE  = SIM_LOG_FILE
+        print(f"{Fore.MAGENTA}[SIMULATION] No Wi-Fi adapter used. Alerts are marked \"simulated\" "
+              f"and logged to {LOG_FILE}.")
+    else:
+        if os.geteuid() != 0:
+            print(f"{Fore.RED}[ERROR] Run with sudo.")
+            exit(1)
 
-    if not os.path.exists(f"/sys/class/net/{INTERFACE}"):
-        print(f"{Fore.RED}[ERROR] Interface not found: {INTERFACE}")
-        exit(1)
+        if not os.path.exists(f"/sys/class/net/{INTERFACE}"):
+            available = sorted(n for n in os.listdir("/sys/class/net") if n != "lo")
+            print(f"{Fore.RED}[ERROR] Interface not found: {INTERFACE}")
+            print(f"{Fore.YELLOW}        Available: {', '.join(available) or 'none'}. "
+                  f"Use --interface NAME, or --simulate to test without an adapter.")
+            exit(1)
 
     logger = ForensicLogger(LOG_FILE)
     engine = DetectionEngine(logger)

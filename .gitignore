@@ -33,3 +33,5 @@ dashboard.log
 
 # HTTPS certificates and private keys (dashboard/make_certs.py)
 certs/
+forensic_log_simulated.json
+run/forensic_log_simulated.json
