@@ -8,7 +8,7 @@ something TwinGuard doesn't use.
 
 | What | Where it lives |
 |---|---|
-| Admin account | Firebase Authentication (+ `admin` custom claim) |
+| Admin accounts | Firebase Authentication (+ `admin` custom claim) + `admins/{uid}` in Firestore |
 | Operator accounts | Firebase Authentication + `users/{uid}` in Firestore |
 | Sealed alerts | `alerts/{sha256}` in Firestore |
 | Retention setting | `twinguard_config.json` on the dashboard machine |
@@ -72,6 +72,20 @@ uploads stop and the app signs them out.
 Without `--email` the detector still runs, but alerts only go to the local
 `forensic_log.json` and never reach the dashboard or app.
 
+Options:
+
+| Option | Use |
+|---|---|
+| `--interface NAME` | Monitor-mode Wi-Fi interface (default `wlan0`, or `$TWINGUARD_INTERFACE`). On a Raspberry Pi the USB adapter is usually `wlan1`; the built-in chip can't do monitor mode. |
+| `--simulate` | No adapter needed: feeds realistic scans with occasional evil twins (HIGH and MEDIUM) through the real detection logic. Alerts carry `"simulated": true` inside their SHA-256 seal, show a **SIM** badge on the dashboard and a "SIMULATED" banner on Telegram, and are logged locally to `forensic_log_simulated.json`. No sudo needed. |
+
+```bash
+# Demo the whole pipeline without hardware
+.venv/bin/python detection/detection.py --simulate --email lily@gmail.com
+# Raspberry Pi with a USB adapter
+sudo .venv/bin/python detection/detection.py --interface wlan1 --email lily@gmail.com
+```
+
 ## 4. Phone app integration
 
 Use the free Firebase SDK for your app's platform (Android, iOS, Flutter, React Native…)
@@ -96,7 +110,8 @@ with the same Firebase project.
 
 Alert fields: `timestamp` (UTC ISO text; show it in GMT+8), `severity`, `ssid`,
 `bssid`, `signal_dbm`, `channel`, `encryption`, `reasons` (list), `score`,
-`trusted_bssids`, `uid`, `username`, `sha256_hash`.
+`trusted_bssids`, `uid`, `username`, `sha256_hash`, and `simulated: true` on test
+alerts from `--simulate` (absent on real ones). Show those with a "TEST" label.
 
 Apps cannot edit or delete alerts. The rules forbid it, which preserves the evidence.
 
@@ -157,9 +172,41 @@ Then open `https://<dashboard IP>:5000` (the dashboard prints the exact addresse
 - First login on the dashboard machine shows a QR code. Scan it with any authenticator
   app (Google Authenticator, Microsoft Authenticator, Aegis, 2FAS) and enter the code.
 - After that, every login asks for the password, then the current 6-digit code.
-- **Lost the phone?** In the Firebase console → Firestore → `config` → `admin`, delete the
-  `totp_secret` field. Then log in on the dashboard machine itself to set up 2FA again.
-  Only someone with your Firebase console access can do this.
+- **Lost the phone?** Another admin opens **Admin Accounts → Reset 2FA** for you and gives
+  you the new one-time setup code (see below).
+  If you're the only admin: Firebase console → Firestore → `admins` → your uid → delete the
+  `totp_secret` field, then log in on the dashboard machine itself to set up 2FA again.
+
+### Workspaces (one per admin)
+
+Every admin owns an isolated **workspace** (`workspaces/{adminUid}` in Firestore).
+Operators belong to exactly one workspace (`users/{uid}.workspace_id`), and an alert
+belongs to the workspace of the operator whose detector sealed it.
+
+| Role | Sees | Can manage |
+|---|---|---|
+| **Super admin** (the first-run admin) | every workspace, all operators and alerts | admins, any workspace's operators, retention |
+| **Workspace admin** (created on Admin Accounts) | only their workspace's operators and alerts | only their own operators |
+
+Workspaces live inside the free default Firestore database. Truly separate Firestore
+databases ("named databases") need a billing account and get no free quota, so they
+aren't used. The detector, phone app and security rules are unchanged by workspaces.
+
+### Admin accounts
+
+Admins are created only by logged-in admins. There is no public sign-up.
+
+1. **Admin Accounts → Create Admin** (email + display name). The dashboard shows a
+   **one-time setup code** (e.g. `K7QX-2M9P-4TRW`) once. Only its SHA-256 hash is stored.
+2. Give the code to the new admin privately. It works once and expires after 24 hours.
+3. The new admin opens `https://<dashboard>/admin-setup` (or *"New admin? Set up with a
+   one-time code"* on the login page) from any LAN device, enters their email and the code,
+   **chooses their own password** and scans the 2FA QR code. You never learn their password.
+
+Admins can disable/enable other admins and reset their 2FA (which issues a new setup code
+and signs them out). Nobody can disable themselves, reset their own 2FA, or disable the
+last enabled admin. Admin records live in `admins/{uid}` and, like `config/`, can't be
+read or written by phones or detectors.
 
 ### Optional: firewall
 

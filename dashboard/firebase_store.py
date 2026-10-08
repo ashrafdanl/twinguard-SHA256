@@ -6,15 +6,22 @@ Uses only Firebase's free Spark plan features:
   - Cloud Firestore for user profiles and the sealed forensic alerts
 
 Firestore layout:
-  users/{uid}     operator profile: username, full_name, email, role, enabled, created_at
-  alerts/{sha}    sealed alert written by an operator's detection engine
-  config/admin    marker for the dashboard admin account (server-only)
+  users/{uid}          operator profile: username, full_name, email, role, enabled,
+                       created_at, workspace_id
+  alerts/{sha}         sealed alert written by an operator's detection engine
+  admins/{uid}         dashboard admin: role "super" | "admin", workspace_id, 2FA (server-only)
+  workspaces/{id}      one isolated workspace per admin: name, owner (server-only)
+
+Workspaces: every admin owns a workspace (id = their uid). Operators belong to one
+workspace, and an alert belongs to its operator's workspace. Workspace admins see only
+their own workspace; super admins see all. (Separate Firestore databases would need a
+billing account, so isolation is done inside the free default database.)
 
 The dashboard keeps live in-memory copies of `users` and `alerts` through
 Firestore listeners, so the 10-second browser refresh costs no Firestore reads.
 """
 
-import json, os, threading
+import json, os, secrets, threading
 from datetime import datetime, timezone
 import requests
 import firebase_admin
@@ -127,13 +134,14 @@ class FirebaseStore:
                 "full_name":  p.get("full_name", ""),
                 "email":      p.get("email", ""),
                 "role":       p.get("role", "operator"),
+                "workspace_id": p.get("workspace_id"),
                 "enabled":    not disabled,
                 "created_at": p.get("created_at"),
                 "last_login": _ms_to_iso(last_ms),
             })
         return sorted(result, key=lambda u: u["created_at"] or "")
 
-    def create_user(self, username, full_name, email, password, created_at):
+    def create_user(self, username, full_name, email, password, created_at, workspace_id):
         lower = username.lower()
         if any(p.get("username_lower") == lower for p in self.user_profiles().values()):
             raise FirebaseError("Username already exists")
@@ -145,7 +153,8 @@ class FirebaseStore:
         except ValueError as e:
             raise FirebaseError(str(e))
         profile = {"username": username, "username_lower": lower, "full_name": full_name,
-                   "email": email, "role": "operator", "enabled": True, "created_at": created_at}
+                   "email": email, "role": "operator", "enabled": True, "created_at": created_at,
+                   "workspace_id": workspace_id}
         try:
             self.db.collection("users").document(user.uid).set(profile)
         except Exception:
@@ -166,39 +175,170 @@ class FirebaseStore:
             self._users[uid]["enabled"] = enabled
         return self._users[uid].get("username", uid)
 
-    # ── Admin ────────────────────────────────────────────────────────────────
+    # ── Admins (admins/{uid}; server-only, client security rules deny all access) ──
+    #   email, display_name, enabled, created_at, created_by,
+    #   totp_secret, totp_last_counter, totp_enrolled_at      (2FA)
+    #   setup_code_hash, setup_code_expires                   (one-time setup code)
+    def _admins(self):
+        return self.db.collection("admins")
+
+    def _migrate_single_admin(self):
+        """Move the original single-admin record (config/admin) into admins/{uid}, once."""
+        old = self.db.collection("config").document("admin")
+        snap = old.get()
+        if not snap.exists:
+            return
+        d = snap.to_dict()
+        ref = self._admins().document(d["uid"])
+        if not ref.get().exists:
+            rec = {k: v for k, v in d.items() if k != "uid"}
+            rec.update(display_name=rec.get("display_name", ""), enabled=True, created_by=None)
+            ref.set(rec)
+            if ref.get().to_dict() != rec:
+                raise RuntimeError("Admin migration could not be verified; config/admin left in place.")
+        old.delete()
+        print(f"[Admins] Migrated admin '{d.get('email')}' to admins/{d['uid']}.")
+
     def admin_exists(self):
         if not self._admin_exists:
-            self._admin_exists = self.db.collection("config").document("admin").get().exists
+            self._migrate_single_admin()
+            self._admin_exists = any(True for _ in self._admins().limit(1).stream())
+            if self._admin_exists:
+                self._migrate_workspaces()
         return self._admin_exists
 
-    def create_admin(self, email, password, created_at):
-        ref = self.db.collection("config").document("admin")
-        if ref.get().exists:
+    # ── Workspaces ───────────────────────────────────────────────────────────
+    def _workspaces(self):
+        return self.db.collection("workspaces")
+
+    def _ensure_workspace(self, admin_uid, rec):
+        ref = self._workspaces().document(admin_uid)
+        if not ref.get().exists:
+            ref.set({"name": rec.get("display_name") or rec.get("email", admin_uid),
+                     "owner_uid": admin_uid, "owner_email": rec.get("email"),
+                     "created_at": rec.get("created_at")})
+
+    def _migrate_workspaces(self):
+        """Give older records roles/workspaces: the original admin becomes super admin,
+        and operators without a workspace join the first super admin's workspace."""
+        supers = []
+        for snap in self._admins().stream():
+            rec = snap.to_dict()
+            if not rec.get("role") or not rec.get("workspace_id"):
+                rec["role"] = rec.get("role") or ("super" if rec.get("created_by") is None else "admin")
+                rec["workspace_id"] = snap.id
+                snap.reference.update({"role": rec["role"], "workspace_id": snap.id})
+                print(f"[Workspaces] Admin '{rec.get('email')}' -> role {rec['role']}, own workspace.")
+            self._ensure_workspace(snap.id, rec)
+            if rec["role"] == "super":
+                supers.append((rec.get("created_at") or "", snap.id))
+        if not supers:
+            return
+        home = min(supers)[1]
+        for snap in self.db.collection("users").stream():
+            if not snap.to_dict().get("workspace_id"):
+                snap.reference.update({"workspace_id": home})
+                with self._lock:
+                    if snap.id in self._users:
+                        self._users[snap.id]["workspace_id"] = home
+                print(f"[Workspaces] Operator '{snap.to_dict().get('username')}' -> workspace {home}.")
+
+    def list_workspaces(self):
+        return sorted(({"id": w.id, **w.to_dict()} for w in self._workspaces().stream()),
+                      key=lambda w: w.get("created_at") or "")
+
+    def admin_record(self, uid):
+        snap = self._admins().document(uid).get()
+        return snap.to_dict() if snap.exists else None
+
+    def create_admin(self, email, password, created_at, display_name="", created_by=None,
+                     setup_code_hash=None, setup_code_expires=None):
+        """First-run admin (password given) or an admin created by another admin
+        (no usable password yet: they set it with their one-time setup code)."""
+        if created_by is None and self.admin_exists():
             raise FirebaseError("An admin account already exists")
         try:
-            user = auth.create_user(email=email, password=password, display_name="TwinGuard Admin")
+            user = auth.create_user(email=email, password=password or secrets.token_urlsafe(32),
+                                    display_name=display_name or "TwinGuard Admin")
         except auth.EmailAlreadyExistsError:
             raise FirebaseError("An account with this email already exists")
         except ValueError as e:
             raise FirebaseError(str(e))
-        auth.set_custom_user_claims(user.uid, {"admin": True})
-        ref.create({"uid": user.uid, "email": email, "created_at": created_at})
+        rec = {"email": email, "display_name": display_name, "enabled": True,
+               "role": "super" if created_by is None else "admin", "workspace_id": user.uid,
+               "created_at": created_at, "created_by": created_by,
+               "setup_code_hash": setup_code_hash, "setup_code_expires": setup_code_expires}
+        try:
+            auth.set_custom_user_claims(user.uid, {"admin": True})
+            self._admins().document(user.uid).create(rec)
+            self._ensure_workspace(user.uid, rec)
+        except Exception:
+            auth.delete_user(user.uid)
+            raise
         self._admin_exists = True
         return user.uid
 
-    # ── Admin 2FA (secret lives in config/admin; client rules deny all access) ──
-    def admin_record(self):
-        snap = self.db.collection("config").document("admin").get()
-        return snap.to_dict() if snap.exists else None
+    def list_admins(self):
+        meta = {}
+        for u in auth.list_users().iterate_all():
+            if (u.custom_claims or {}).get("admin"):
+                meta[u.uid] = (u.disabled, u.user_metadata.last_sign_in_timestamp)
+        result = []
+        for snap in self._admins().stream():
+            d = snap.to_dict()
+            disabled, last_ms = meta.get(snap.id, (True, None))
+            pending = bool(d.get("setup_code_hash")) and not d.get("totp_secret")
+            result.append({
+                "id": snap.id, "email": d.get("email", ""), "display_name": d.get("display_name", ""),
+                "role": d.get("role", "admin"), "workspace_id": d.get("workspace_id", snap.id),
+                "enabled": bool(d.get("enabled")) and not disabled,
+                "twofa": "active" if d.get("totp_secret") else ("setup_pending" if pending else "not_set"),
+                "setup_code_expires": d.get("setup_code_expires") if pending else None,
+                "created_at": d.get("created_at"), "created_by": d.get("created_by"),
+                "last_login": _ms_to_iso(last_ms),
+            })
+        return sorted(result, key=lambda a: a["created_at"] or "")
 
-    def set_admin_totp(self, secret, counter, enrolled_at):
-        self.db.collection("config").document("admin").update(
+    def set_admin_enabled(self, uid, enabled):
+        if not self.admin_record(uid):
+            raise KeyError(uid)
+        auth.update_user(uid, disabled=not enabled)
+        if not enabled:
+            auth.revoke_refresh_tokens(uid)
+        self._admins().document(uid).update({"enabled": enabled})
+
+    def set_admin_setup_code(self, uid, code_hash, expires):
+        """Issue a new one-time setup code and remove the current 2FA (used for 2FA resets)."""
+        if not self.admin_record(uid):
+            raise KeyError(uid)
+        self._admins().document(uid).update({
+            "setup_code_hash": code_hash, "setup_code_expires": expires,
+            "totp_secret": firestore.DELETE_FIELD, "totp_last_counter": firestore.DELETE_FIELD})
+        auth.revoke_refresh_tokens(uid)
+
+    def find_admin_by_email(self, email):
+        try:
+            u = auth.get_user_by_email(email)
+        except (auth.UserNotFoundError, ValueError):
+            return None, None
+        rec = self.admin_record(u.uid)
+        return (u.uid, rec) if rec else (None, None)
+
+    def complete_admin_setup(self, uid, password, secret, counter, enrolled_at):
+        """Redeem a setup code: set the admin's own password and 2FA; the code is single-use."""
+        auth.update_user(uid, password=password)
+        self._admins().document(uid).update({
+            "totp_secret": secret, "totp_last_counter": counter, "totp_enrolled_at": enrolled_at,
+            "setup_code_hash": None, "setup_code_expires": None})
+
+    # ── Admin 2FA ────────────────────────────────────────────────────────────
+    def set_admin_totp(self, uid, secret, counter, enrolled_at):
+        self._admins().document(uid).update(
             {"totp_secret": secret, "totp_last_counter": counter, "totp_enrolled_at": enrolled_at})
 
-    def consume_totp_counter(self, counter):
+    def consume_totp_counter(self, uid, counter):
         """Atomically record a used TOTP time-step. False if it (or a later one) was already used."""
-        ref = self.db.collection("config").document("admin")
+        ref = self._admins().document(uid)
 
         @firestore.transactional
         def txn(t):
@@ -216,12 +356,13 @@ class FirebaseStore:
             u = auth.get_user(uid)
         except auth.UserNotFoundError:
             return False
+        rec = self.admin_record(uid) or {}
         revoked_after = (u.tokens_valid_after_timestamp or 0) / 1000
         return (not u.disabled and (u.custom_claims or {}).get("admin") is True
-                and revoked_after <= logged_in_at)
+                and rec.get("enabled") is True and revoked_after <= logged_in_at)
 
     def sign_in_admin(self, email, password):
-        """Check credentials with Firebase Auth; returns (uid, email) for admins only."""
+        """Check credentials with Firebase Auth; returns (uid, email) for enabled admins only."""
         try:
             r = requests.post(SIGN_IN_URL, params={"key": self.api_key}, timeout=10,
                               json={"email": email, "password": password, "returnSecureToken": True})
@@ -235,8 +376,11 @@ class FirebaseStore:
                 raise FirebaseError("Too many failed attempts. Try again later.")
             raise FirebaseError("Invalid email or password")
         claims = auth.verify_id_token(r.json()["idToken"])
-        if claims.get("admin") is not True:
+        rec = self.admin_record(claims["uid"])
+        if claims.get("admin") is not True or not rec:
             raise FirebaseError("This account is not an administrator")
+        if not rec.get("enabled"):
+            raise FirebaseError("This account is disabled")
         return claims["uid"], claims.get("email", email)
 
 

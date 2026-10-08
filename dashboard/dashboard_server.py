@@ -53,6 +53,8 @@ ABSOLUTE_TIMEOUT = 8 * 3600     # and always after 8 h
 RECHECK_SECONDS  = 5 * 60       # re-verify the admin account with Firebase
 PENDING_SECONDS  = 5 * 60       # time allowed between password and 2FA code
 MAX_2FA_TRIES    = 5
+SETUP_CODE_TTL   = 24 * 3600    # one-time admin setup codes expire after 24 h
+SETUP_ALPHABET   = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # no 0/O/1/I confusion
 
 store = None  # FirebaseStore, created in main()
 
@@ -87,7 +89,7 @@ def verify_sha256(entry):
 # ── Admin authentication & web security ──────────────────────────────────────
 LOOPBACK = ("127.0.0.1", "::1")
 # Pages reachable without a full admin session (they check their own state)
-PUBLIC_ENDPOINTS = {"login", "setup", "two_factor", "two_factor_setup", "logout", "static"}
+PUBLIC_ENDPOINTS = {"login", "setup", "two_factor", "two_factor_setup", "admin_setup", "logout", "static"}
 
 def load_secret_key():
     if os.path.exists(SECRET_FILE):
@@ -152,7 +154,9 @@ def start_admin_session(uid, email):
     session.clear()                      # new CSRF token, no pending state
     session.permanent = True
     now = time.time()
-    session.update(admin=email, admin_uid=uid, login_at=now, last_active=now, checked_at=now)
+    rec = store.admin_record(uid) or {}
+    session.update(admin=email, admin_uid=uid, login_at=now, last_active=now, checked_at=now,
+                   admin_role=rec.get("role", "admin"), workspace_id=rec.get("workspace_id", uid))
 
 def admin_session_valid():
     if not session.get("admin"):
@@ -164,7 +168,9 @@ def admin_session_valid():
         # disabled, admin claim removed, or sessions revoked (password reset) -> out
         if not store.admin_account_ok(session.get("admin_uid", ""), session.get("login_at", 0) + 120):
             return False
-        session["checked_at"] = now
+        rec = store.admin_record(session["admin_uid"]) or {}
+        session.update(checked_at=now, admin_role=rec.get("role", "admin"),
+                       workspace_id=rec.get("workspace_id", session["admin_uid"]))
     if not request.headers.get("X-Background"):   # the 10 s auto-refresh is not admin activity
         session["last_active"] = now
     return True
@@ -179,6 +185,17 @@ def verify_totp(secret, code):
         if hmac.compare_digest(totp.generate_otp(counter), code):
             return counter
     return None
+
+def new_setup_code():
+    raw = "".join(secrets.choice(SETUP_ALPHABET) for _ in range(12))
+    return f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
+
+def setup_code_hash(code):
+    return hashlib.sha256(re.sub(r"[^A-Z0-9]", "", (code or "").upper()).encode()).hexdigest()
+
+def setup_code_valid(rec, code):
+    return bool(rec and rec.get("setup_code_hash") and (rec.get("setup_code_expires") or 0) > time.time()
+                and hmac.compare_digest(setup_code_hash(code), rec["setup_code_hash"]))
 
 def qr_svg(data):
     img = qrcode.make(data, image_factory=qrcode.image.svg.SvgPathImage, box_size=8, border=2)
@@ -249,10 +266,35 @@ def purge_old_logs():
 
 # ── API ───────────────────────────────────────────────────────────────────────
 
+# ── Workspace scoping: super admins see everything, workspace admins only their own ──
+def is_super():
+    return session.get("admin_role") == "super"
+
+def visible_profiles():
+    """Operator profiles this admin may see/manage: {uid: profile}."""
+    profiles = store.user_profiles()
+    if is_super():
+        return profiles
+    ws = session.get("workspace_id")
+    return {uid: p for uid, p in profiles.items() if p.get("workspace_id") == ws}
+
+def visible_alerts():
+    """An alert belongs to the workspace of the operator who sealed it."""
+    alerts = store.alerts()
+    if is_super():
+        return alerts
+    mine = set(visible_profiles())
+    return [a for a in alerts if a.get("uid") in mine]
+
+def super_only():
+    if not is_super():
+        return jsonify({"error": "Only super admins can do this"}), 403
+    return None
+
 @app.route("/api/logs", methods=["GET"])
 def get_logs():
     result = []
-    for e in store.alerts():
+    for e in visible_alerts():
         copy = dict(e)
         copy["integrity_ok"] = verify_sha256(e)  # verify ORIGINAL, attach to COPY
         result.append(copy)
@@ -260,8 +302,8 @@ def get_logs():
 
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
-    logs  = store.alerts()
-    users = store.user_profiles().values()
+    logs  = visible_alerts()
+    users = visible_profiles().values()
     cfg   = load_config()
     return jsonify({
         "total_alerts":   len(logs),
@@ -280,6 +322,8 @@ def get_retention():
 
 @app.route("/api/retention", methods=["POST"])
 def set_retention():
+    if (denied := super_only()):            # retention applies to every workspace
+        return denied
     data = request.get_json(force=True)
     try:
         days = int(data.get("retention_days", 30))
@@ -295,7 +339,7 @@ def set_retention():
 
 @app.route("/api/verify/<sha256_hash>", methods=["GET"])
 def verify_entry(sha256_hash):
-    for e in store.alerts():
+    for e in visible_alerts():
         if e.get("sha256_hash") == sha256_hash:
             return jsonify({"found": True, "integrity_ok": verify_sha256(e), "entry": e})
     return jsonify({"found": False}), 404
@@ -304,7 +348,8 @@ def verify_entry(sha256_hash):
 # ── User management (app operators under the admin) ──────────────────────────
 @app.route("/api/users", methods=["GET"])
 def list_users():
-    return jsonify(store.users())
+    mine = visible_profiles()
+    return jsonify([u for u in store.users() if u["id"] in mine])
 
 @app.route("/api/users", methods=["POST"])
 def create_user():
@@ -319,8 +364,13 @@ def create_user():
         return jsonify({"error": "A valid email is required (operators sign in with it)"}), 400
     if len(password) < 8:
         return jsonify({"error": "Password must be at least 8 characters"}), 400
-    uid = store.create_user(username, full_name, email, password, now_iso())
-    print(f"[Users] Created user '{username}' ({email}).")
+    workspace = session["workspace_id"]
+    if is_super() and data.get("workspace_id"):     # super admins may add to any workspace
+        workspace = str(data["workspace_id"])
+        if workspace not in {w["id"] for w in store.list_workspaces()}:
+            return jsonify({"error": "Unknown workspace"}), 400
+    uid = store.create_user(username, full_name, email, password, now_iso(), workspace)
+    print(f"[Users] '{session['admin']}' created user '{username}' ({email}) in workspace {workspace}.")
     return jsonify({"id": uid, "username": username}), 201
 
 @app.route("/api/users/<user_id>/status", methods=["POST"])
@@ -328,12 +378,84 @@ def set_user_status(user_id):
     data = request.get_json(force=True) or {}
     if not isinstance(data.get("enabled"), bool):
         return jsonify({"error": "'enabled' must be true or false"}), 400
+    if user_id not in visible_profiles():           # other workspaces' operators don't exist for you
+        return jsonify({"error": "User not found"}), 404
     try:
         username = store.set_user_enabled(user_id, data["enabled"])
     except KeyError:
         return jsonify({"error": "User not found"}), 404
     print(f"[Users] {'Enabled' if data['enabled'] else 'Disabled'} user '{username}'.")
     return jsonify({"id": user_id, "enabled": data["enabled"]})
+
+
+# ── Admin accounts (created only by logged-in admins) ────────────────────────
+@app.route("/api/workspaces", methods=["GET"])
+def list_workspaces():
+    profiles, alerts = visible_profiles(), visible_alerts()
+    ws_of = {uid: p.get("workspace_id") for uid, p in profiles.items()}
+    out = []
+    for w in store.list_workspaces():
+        if not is_super() and w["id"] != session.get("workspace_id"):
+            continue
+        out.append({"id": w["id"], "name": w.get("name", ""), "owner_email": w.get("owner_email"),
+                    "operators": sum(1 for v in ws_of.values() if v == w["id"]),
+                    "alerts": sum(1 for a in alerts if ws_of.get(a.get("uid")) == w["id"])})
+    return jsonify(out)
+
+@app.route("/api/admins", methods=["GET"])
+def list_admins():
+    if (denied := super_only()):
+        return denied
+    return jsonify(store.list_admins())
+
+@app.route("/api/admins", methods=["POST"])
+def create_admin_account():
+    if (denied := super_only()):
+        return denied
+    data  = request.get_json(force=True) or {}
+    email = str(data.get("email", "")).strip()
+    name  = str(data.get("display_name", "")).strip()[:80]
+    if not EMAIL_RE.match(email):
+        return jsonify({"error": "A valid email is required"}), 400
+    code, expires = new_setup_code(), int(time.time()) + SETUP_CODE_TTL
+    uid = store.create_admin(email, None, now_iso(), display_name=name, created_by=session["admin"],
+                             setup_code_hash=setup_code_hash(code), setup_code_expires=expires)
+    print(f"[Admins] '{session['admin']}' created admin '{email}'.")
+    return jsonify({"id": uid, "email": email, "setup_code": code, "expires": expires}), 201
+
+@app.route("/api/admins/<uid>/status", methods=["POST"])
+def set_admin_status(uid):
+    if (denied := super_only()):
+        return denied
+    data = request.get_json(force=True) or {}
+    if not isinstance(data.get("enabled"), bool):
+        return jsonify({"error": "'enabled' must be true or false"}), 400
+    if not data["enabled"]:
+        if uid == session.get("admin_uid"):
+            return jsonify({"error": "You can't disable your own account"}), 400
+        enabled = [a for a in store.list_admins() if a["enabled"]]
+        if len(enabled) <= 1 and any(a["id"] == uid for a in enabled):
+            return jsonify({"error": "You can't disable the last enabled admin"}), 400
+    try:
+        store.set_admin_enabled(uid, data["enabled"])
+    except KeyError:
+        return jsonify({"error": "Admin not found"}), 404
+    print(f"[Admins] '{session['admin']}' {'enabled' if data['enabled'] else 'disabled'} admin {uid}.")
+    return jsonify({"id": uid, "enabled": data["enabled"]})
+
+@app.route("/api/admins/<uid>/reset-2fa", methods=["POST"])
+def reset_admin_2fa(uid):
+    if (denied := super_only()):
+        return denied
+    if uid == session.get("admin_uid"):
+        return jsonify({"error": "Ask another admin to reset your 2FA"}), 400
+    code, expires = new_setup_code(), int(time.time()) + SETUP_CODE_TTL
+    try:
+        store.set_admin_setup_code(uid, setup_code_hash(code), expires)
+    except KeyError:
+        return jsonify({"error": "Admin not found"}), 404
+    print(f"[Admins] '{session['admin']}' reset 2FA for admin {uid}.")
+    return jsonify({"id": uid, "setup_code": code, "expires": expires})
 
 # ── Dashboard HTML ────────────────────────────────────────────────────────────
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -343,6 +465,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TwinGuard-SHA256 | Dashboard</title>
 <meta name="csrf-token" content="{{ csrf_token() }}">
+<meta name="admin-uid" content="{{ admin_uid }}">
+<meta name="admin-role" content="{{ role }}">
 <link rel="icon" type="image/png" href="/static/favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;500;700;900&display=swap" rel="stylesheet">
 <style nonce="{{ csp_nonce }}">
@@ -359,6 +483,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   --accent:#1b8ad6; --cyan:#0e7fc2; --safe:#0fae74; --warning:#d98a00; --danger:#e23b5a; --violet:#7c5ce0; --onaccent:#fff; }
 
 *{margin:0;padding:0;box-sizing:border-box;}
+[hidden]{display:none!important;}
 html{scroll-behavior:smooth;}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;
   transition:background var(--t),color var(--t);
@@ -486,6 +611,7 @@ tr.new-row td{animation:flashRow .8s ease;}
 .badge.LOW{background:color-mix(in srgb,var(--safe) 12%,transparent);color:var(--safe);border:1px solid var(--safe);}
 .badge.on{background:color-mix(in srgb,var(--safe) 12%,transparent);color:var(--safe);border:1px solid var(--safe);}
 .badge.off{background:color-mix(in srgb,var(--dim) 15%,transparent);color:var(--dim);border:1px solid var(--dim);}
+.badge.sim{background:color-mix(in srgb,var(--violet) 14%,transparent);color:var(--violet);border:1px dashed var(--violet);}
 .badge.role{background:color-mix(in srgb,var(--violet) 14%,transparent);color:var(--violet);border:1px solid var(--violet);}
 .bssid{font-family:var(--mono);font-size:12px;color:var(--accent);}
 .hash{font-family:var(--mono);font-size:10px;color:var(--dim);}
@@ -560,6 +686,14 @@ tr.new-row td{animation:flashRow .8s ease;}
 .uname{font-weight:700;} .umeta{font-size:12px;color:var(--dim);}
 tr.disabled td{opacity:.6;} tr.disabled td:last-child{opacity:1;}
 .row-actions{white-space:nowrap;} .row-actions .btn+.btn{margin-left:6px;}
+.badge.pending{background:color-mix(in srgb,var(--warning) 14%,transparent);color:var(--warning);border:1px dashed var(--warning);}
+.you{font-family:var(--mono);font-size:10px;color:var(--accent);margin-left:6px;letter-spacing:1px;}
+.code-box{margin:0 24px 20px;padding:16px 18px;border:1px dashed var(--accent);border-radius:var(--radius);background:var(--glow);}
+.code-box h4{font-family:var(--mono);font-size:11px;letter-spacing:2px;color:var(--accent);text-transform:uppercase;margin-bottom:8px;}
+.code-box .code{font-family:var(--mono);font-size:26px;letter-spacing:4px;color:var(--text);margin:4px 0 10px;}
+.code-box p{font-size:13px;color:var(--dim);line-height:1.6;}
+.code-box p b{color:var(--text);font-weight:500;}
+.code-box .btn{margin-top:10px;}
 
 footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;color:var(--dim);
   border-top:1px solid var(--border);margin-top:auto;}
@@ -589,11 +723,14 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
     <a href="#overview" class="active"><span class="ico">◈</span>Overview</a>
     <a href="#threats"><span class="ico">⚠</span>Threat Log</a>
     <a href="#users"><span class="ico">👥</span>User Management</a>
+    {% if role == 'super' %}
+    <a href="#admins"><span class="ico">🛡</span>Admin Accounts</a>
     <a href="#settings"><span class="ico">⚙</span>Settings</a>
+    {% endif %}
   </nav>
   <div class="side-foot">
     <button class="theme-toggle" id="theme-btn" type="button">☀️ Light Mode</button>
-    <div class="sys-line">SIGNED IN: {{ admin }}<br>ROLE: ADMINISTRATOR</div>
+    <div class="sys-line">SIGNED IN: {{ admin }}<br>ROLE: {{ 'SUPER ADMIN' if role == 'super' else 'WORKSPACE ADMIN' }}<br>WORKSPACE: {{ 'ALL (super view)' if role == 'super' else workspace_name }}</div>
     <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm danger logout" type="submit">⏻ Log Out</button></form>
   </div>
 </aside>
@@ -680,6 +817,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
         <label>Full Name<input class="field" id="u-fullname" maxlength="80" placeholder="Ali Ahmad"></label>
         <label>Email (app sign-in)<input class="field" id="u-email" type="email" required maxlength="120" placeholder="ali@example.com"></label>
         <label>Password<input class="field" id="u-password" type="password" required minlength="8" autocomplete="new-password" placeholder="min. 8 characters"></label>
+        {% if role == 'super' %}<label>Workspace<select class="field" id="u-workspace"></select></label>{% endif %}
         <div class="form-actions">
           <button class="btn primary" type="submit">＋ Add User</button>
           <span class="form-status" id="user-status"></span>
@@ -687,9 +825,41 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
       </form>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th>Created (GMT+8)</th><th>Last Login (GMT+8)</th><th>Action</th></tr></thead>
+          <thead><tr><th>User</th><th>Email</th>{% if role == 'super' %}<th>Workspace</th>{% endif %}<th>Role</th><th>Status</th><th>Created (GMT+8)</th><th>Last Login (GMT+8)</th><th>Action</th></tr></thead>
           <tbody id="user-body">
-            <tr><td colspan="7" class="empty-state"><div class="icon">👥</div>Loading users...</td></tr>
+            <tr><td colspan="8" class="empty-state"><div class="icon">👥</div>Loading users...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  {% if role == 'super' %}
+  <section id="admins">
+    <div class="sec-head"><div class="sec-title">Admin Accounts</div><div class="sec-note">dashboard administrators · password + 2FA</div></div>
+    <div class="panel">
+      <form class="user-form" id="admin-form">
+        <label>Email<input class="field" id="a-email" type="email" required maxlength="120" placeholder="admin@example.com"></label>
+        <label>Display Name<input class="field" id="a-name" maxlength="80" placeholder="Nur Aisyah"></label>
+        <div class="form-actions">
+          <button class="btn primary" type="submit">＋ Create Admin</button>
+          <span class="form-status" id="admin-status"></span>
+        </div>
+      </form>
+      <div class="code-box" id="code-box" hidden>
+        <h4 id="code-title">One-time setup code</h4>
+        <div class="code" id="code-value"></div>
+        <p>Give this code to <b id="code-email"></b> in person or by a private message. It works <b>once</b> and expires
+          <b id="code-expires"></b>. They open <b id="code-url"></b>, enter their email and this code, choose their own
+          password and set up their authenticator app. <b>This code is not shown again.</b></p>
+        <button class="btn sm" type="button" id="code-copy">⧉ Copy code</button>
+        <button class="btn sm" type="button" id="code-hide">Done</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Admin</th><th>Status</th><th>2FA</th><th>Workspace</th><th>Created (GMT+8)</th><th>Created By</th><th>Last Login (GMT+8)</th><th>Action</th></tr></thead>
+          <tbody id="admin-body">
+            <tr><td colspan="8" class="empty-state"><div class="icon">🛡</div>Loading admins...</td></tr>
           </tbody>
         </table>
       </div>
@@ -709,6 +879,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
       </div>
     </div>
   </section>
+  {% endif %}
 </main>
 
 <div class="tip" id="tip" hidden></div>
@@ -824,7 +995,7 @@ function renderTable(logs, highlight=false, emptyMsg='No high-severity alerts.')
     const nr   = (highlight && i===0) ? ' class="new-row"' : '';
     return `<tr${nr}>
       <td class="ts">${ts}</td>
-      <td><span class="badge ${sev}">${sev}</span></td>
+      <td><span class="badge ${sev}">${sev}</span>${l.simulated === true ? ' <span class="badge sim" title="Simulated alert (test only, not real evidence)">SIM</span>' : ''}</td>
       <td><strong>${esc(l.ssid||'?')}</strong></td>
       <td class="bssid">${esc(l.bssid||'?')}</td>
       <td>${esc(l.signal_dbm||'?')} dBm</td>
@@ -1086,12 +1257,13 @@ async function loadUsers() {
     document.getElementById('stat-users').textContent  = users.length;
     document.getElementById('stat-active').textContent = users.filter(u => u.enabled).length;
     if (!users.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">👥</div>No users yet. Add one above.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><div class="icon">👥</div>No users yet. Add one above.</td></tr>';
       return;
     }
     tbody.innerHTML = users.map(u => `<tr class="${u.enabled ? '' : 'disabled'}">
       <td><div class="uname">${esc(u.username)}</div><div class="umeta">${esc(u.full_name) || '—'}</div></td>
       <td class="umeta">${esc(u.email) || '—'}</td>
+      ${IS_SUPER ? `<td class="umeta">${esc(wsName(u.workspace_id))}</td>` : ''}
       <td><span class="badge role">${esc(u.role).toUpperCase()}</span></td>
       <td><span class="badge ${u.enabled ? 'on' : 'off'}">${u.enabled ? 'ENABLED' : 'DISABLED'}</span></td>
       <td class="ts">${fmtTs(u.created_at)}</td>
@@ -1115,6 +1287,7 @@ async function addUser(ev) {
     full_name: document.getElementById('u-fullname').value.trim(),
     email:     document.getElementById('u-email').value.trim(),
     password:  document.getElementById('u-password').value,
+    workspace_id: document.getElementById('u-workspace')?.value || undefined,
   };
   try {
     const r = await fetch('/api/users', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -1127,6 +1300,112 @@ async function addUser(ev) {
   } catch(e) { s.textContent = '✗ Failed'; s.className = 'form-status err'; }
 }
 
+// ── Admin accounts ────────────────────────────
+const MY_UID   = document.querySelector('meta[name="admin-uid"]').content;
+const IS_SUPER = document.querySelector('meta[name="admin-role"]').content === 'super';
+let workspaces = [];
+const wsName = id => (workspaces.find(w => w.id === id) || {}).name || '—';
+
+async function loadWorkspaces() {
+  try {
+    const r = await fetch('/api/workspaces');
+    if (!r.ok) return;
+    workspaces = await r.json();
+    const sel = document.getElementById('u-workspace');
+    if (sel) {
+      const keep = sel.value;
+      sel.replaceChildren(...workspaces.map(w => {
+        const o = document.createElement('option');
+        o.value = w.id; o.textContent = w.id === MY_UID ? `${w.name} (yours)` : w.name;
+        return o;
+      }));
+      sel.value = keep || MY_UID;
+    }
+  } catch(e) {}
+}
+
+async function loadAdmins() {
+  const tbody = document.getElementById('admin-body');
+  try {
+    const r = await fetch('/api/admins');
+    if (!r.ok) throw new Error();
+    const admins = await r.json();
+    tbody.innerHTML = admins.map(a => {
+      const me = a.id === MY_UID;
+      const twofa = a.twofa === 'active' ? '<span class="badge on">ACTIVE</span>'
+        : a.twofa === 'setup_pending'
+          ? `<span class="badge pending" title="Setup code expires ${esc(fmtTs(new Date(a.setup_code_expires * 1000).toISOString()))}">SETUP PENDING</span>`
+          : '<span class="badge off">NOT SET</span>';
+      const actions = me ? '<span class="umeta">—</span>' : `
+        ${a.enabled
+          ? `<button class="btn sm danger" type="button" data-action="disable" data-id="${esc(a.id)}">Disable</button>`
+          : `<button class="btn sm enable" type="button" data-action="enable" data-id="${esc(a.id)}">Enable</button>`}
+        <button class="btn sm" type="button" data-action="reset" data-id="${esc(a.id)}" data-email="${esc(a.email)}">↺ Reset 2FA</button>`;
+      return `<tr class="${a.enabled ? '' : 'disabled'}">
+        <td><div class="uname">${esc(a.display_name || a.email)}${a.role === 'super' ? ' <span class="badge role">SUPER</span>' : ''}${me ? '<span class="you">(YOU)</span>' : ''}</div><div class="umeta">${esc(a.email)}</div></td>
+        <td><span class="badge ${a.enabled ? 'on' : 'off'}">${a.enabled ? 'ENABLED' : 'DISABLED'}</span></td>
+        <td>${twofa}</td>
+        <td class="umeta">${(() => { const w = workspaces.find(x => x.id === a.workspace_id);
+          return w ? `${esc(w.name)}<br>${w.operators} operator${w.operators === 1 ? '' : 's'} · ${w.alerts} alert${w.alerts === 1 ? '' : 's'}` : '—'; })()}</td>
+        <td class="ts">${fmtTs(a.created_at)}</td>
+        <td class="umeta">${esc(a.created_by || 'first-run setup')}</td>
+        <td class="ts">${fmtTs(a.last_login)}</td>
+        <td class="row-actions">${actions}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><div class="icon">⚠️</div>Could not load admins.</td></tr>';
+  }
+}
+
+function showSetupCode(title, email, code, expires) {
+  document.getElementById('code-title').textContent   = title;
+  document.getElementById('code-email').textContent   = email;
+  document.getElementById('code-value').textContent   = code;
+  document.getElementById('code-expires').textContent = fmtTs(new Date(expires * 1000).toISOString()) + ' (GMT+8)';
+  document.getElementById('code-url').textContent     = location.origin + '/admin-setup';
+  document.getElementById('code-box').hidden = false;
+  document.getElementById('code-box').scrollIntoView({block: 'nearest'});
+}
+
+async function addAdmin(ev) {
+  ev.preventDefault();
+  const s = document.getElementById('admin-status');
+  const email = document.getElementById('a-email').value.trim();
+  try {
+    const r = await fetch('/api/admins', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email, display_name: document.getElementById('a-name').value.trim()})});
+    const d = await r.json();
+    if (!r.ok) { s.textContent = '✗ ' + (d.error || 'Failed'); s.className = 'form-status err'; return; }
+    s.textContent = `✓ Created ${d.email}`; s.className = 'form-status ok';
+    document.getElementById('admin-form').reset();
+    showSetupCode('New admin · one-time setup code', d.email, d.setup_code, d.expires);
+    await loadWorkspaces(); loadAdmins();
+  } catch(e) { s.textContent = '✗ Failed'; s.className = 'form-status err'; }
+}
+
+async function adminAction(b) {
+  const s = document.getElementById('admin-status');
+  const {action, id, email} = b.dataset;
+  if (action === 'reset') {
+    if (b.dataset.confirm !== '1') {   // two-click confirmation (no blocking dialogs)
+      b.dataset.confirm = '1'; b.textContent = 'Click again to reset';
+      setTimeout(() => { b.dataset.confirm = ''; b.textContent = '↺ Reset 2FA'; }, 4000);
+      return;
+    }
+    const r = await fetch(`/api/admins/${encodeURIComponent(id)}/reset-2fa`, {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'});
+    const d = await r.json();
+    if (!r.ok) { s.textContent = '✗ ' + (d.error || 'Failed'); s.className = 'form-status err'; return; }
+    showSetupCode('2FA reset · new one-time setup code', email, d.setup_code, d.expires);
+  } else {
+    const r = await fetch(`/api/admins/${encodeURIComponent(id)}/status`, {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({enabled: action === 'enable'})});
+    const d = await r.json();
+    if (!r.ok) { s.textContent = '✗ ' + (d.error || 'Failed'); s.className = 'form-status err'; }
+  }
+  loadAdmins();
+}
+
 async function setUserStatus(id, enabled) {
   try {
     await fetch(`/api/users/${encodeURIComponent(id)}/status`, {
@@ -1136,9 +1415,8 @@ async function setUserStatus(id, enabled) {
   loadUsers();
 }
 
-loadRetention();
 loadData();
-loadUsers();
+loadWorkspaces().then(() => { loadUsers(); if (IS_SUPER) { loadAdmins(); loadRetention(); } });
 setInterval(() => loadData(true), 10000);
 
 // ── Event wiring (no inline handlers: the Content-Security-Policy forbids them) ──
@@ -1147,7 +1425,20 @@ document.getElementById('btn-refresh').addEventListener('click', () => loadData(
 document.getElementById('search').addEventListener('input', filterTable);
 document.getElementById('btn-export').addEventListener('click', exportLogs);
 document.getElementById('user-form').addEventListener('submit', addUser);
-document.getElementById('btn-save-retention').addEventListener('click', saveRetention);
+document.getElementById('btn-save-retention')?.addEventListener('click', saveRetention);
+document.getElementById('admin-form')?.addEventListener('submit', addAdmin);
+document.getElementById('admin-body')?.addEventListener('click', ev => {
+  const b = ev.target.closest('button[data-action]');
+  if (b) adminAction(b);
+});
+document.getElementById('code-copy')?.addEventListener('click', async ev => {
+  try { await navigator.clipboard.writeText(document.getElementById('code-value').textContent); ev.target.textContent = '✓ Copied'; }
+  catch(e) { ev.target.textContent = 'Select & copy manually'; }
+});
+document.getElementById('code-hide')?.addEventListener('click', () => {
+  document.getElementById('code-box').hidden = true;
+  document.getElementById('code-value').textContent = '';
+});
 document.getElementById('user-body').addEventListener('click', ev => {
   const b = ev.target.closest('button[data-action]');
   if (!b) return;
@@ -1168,7 +1459,7 @@ LOGIN_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TwinGuard-SHA256 | {{ {'setup': 'Admin Setup', '2fa': 'Verification', '2fa_setup': 'Set Up 2FA'}.get(mode, 'Admin Login') }}</title>
+<title>TwinGuard-SHA256 | {{ {'setup': 'Admin Setup', '2fa': 'Verification', '2fa_setup': 'Set Up 2FA', 'invite': 'Set Up Admin Account', 'invite2': 'Set Up Admin Account'}.get(mode, 'Admin Login') }}</title>
 <link rel="icon" type="image/png" href="/static/favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;500;700;900&display=swap" rel="stylesheet">
 <style nonce="{{ csp_nonce }}">
@@ -1214,6 +1505,8 @@ ol.steps{font-size:13px;color:var(--dim);line-height:1.6;margin:0 0 16px 18px;}
 .linkbtn{background:none;border:none;color:var(--dim);font-family:var(--mono);font-size:11px;cursor:pointer;
   width:auto;margin:14px auto 0;display:block;padding:4px;}
 .linkbtn:hover{color:var(--accent);opacity:1;}
+.alt{display:block;text-align:center;margin-top:16px;font-family:var(--mono);font-size:11px;color:var(--dim);text-decoration:none;letter-spacing:1px;}
+.alt:hover{color:var(--accent);}
 .foot{font-family:var(--mono);font-size:10px;color:var(--dim);text-align:center;margin-top:20px;letter-spacing:1px;}
 </style>
 <script nonce="{{ csp_nonce }}">
@@ -1241,6 +1534,39 @@ try { document.documentElement.setAttribute('data-theme', localStorage.getItem('
         <button type="submit">Create Admin Account</button>
       </form>
     {% endif %}
+  {% elif mode == 'invite' %}
+    <h1>Set Up Your Admin Account</h1>
+    <p class="hint">Enter your email and the one-time setup code an administrator gave you.</p>
+    {% if error %}<div class="error">✗ {{ error }}</div>{% endif %}
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="step" value="code">
+      <label>Email<input name="email" type="email" required maxlength="120" autocomplete="username" autofocus></label>
+      <label>Setup Code<input class="code-in" name="setup_code" required maxlength="20" autocomplete="off"
+        placeholder="XXXX-XXXX-XXXX" spellcheck="false"></label>
+      <button type="submit">Continue</button>
+    </form>
+    <a class="alt" href="/login">← Back to login</a>
+  {% elif mode == 'invite2' %}
+    <h1>Choose Password &amp; 2FA</h1>
+    <p class="hint">Setting up <b>{{ email }}</b>. Choose your password, then link your authenticator app.</p>
+    {% if error %}<div class="error">✗ {{ error }}</div>{% endif %}
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="step" value="finish">
+      <input type="hidden" name="email" value="{{ email }}" autocomplete="username">
+      <label>New Password<input name="password" type="password" required minlength="10" autocomplete="new-password" placeholder="min. 10 characters"></label>
+      <label>Confirm Password<input name="confirm" type="password" required minlength="10" autocomplete="new-password"></label>
+      <ol class="steps">
+        <li>Scan this QR code with your authenticator app (or type the key).</li>
+        <li>Enter the 6-digit code it shows.</li>
+      </ol>
+      <div class="qr" role="img" aria-label="Authenticator QR code">{{ qr }}</div>
+      <div class="secret">{{ secret }}</div>
+      <label>Code from the app<input class="code-in" name="code" required inputmode="numeric" pattern="[0-9 ]{6,7}"
+        maxlength="7" autocomplete="one-time-code"></label>
+      <button type="submit">Finish Setup</button>
+    </form>
   {% elif mode == '2fa' %}
     <h1>Two-Factor Verification</h1>
     <p class="hint">Enter the 6-digit code from your authenticator app for <b>{{ email }}</b>.</p>
@@ -1283,6 +1609,7 @@ try { document.documentElement.setAttribute('data-theme', localStorage.getItem('
       <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
       <button type="submit">Log In</button>
     </form>
+    <a class="alt" href="/admin-setup">New admin? Set up with a one-time code →</a>
   {% endif %}
   <div class="foot">TWINGUARD-SHA256 // ADMIN CONSOLE</div>
 </div>
@@ -1291,7 +1618,9 @@ try { document.documentElement.setAttribute('data-theme', localStorage.getItem('
 
 @app.route("/")
 def dashboard():
-    return render_template_string(DASHBOARD_HTML, admin=session.get("admin"))
+    ws = next((w for w in store.list_workspaces() if w["id"] == session.get("workspace_id")), {})
+    return render_template_string(DASHBOARD_HTML, admin=session.get("admin"), admin_uid=session.get("admin_uid"),
+                                  role=session.get("admin_role"), workspace_name=ws.get("name", ""))
 
 @app.route("/setup", methods=["GET", "POST"])
 def setup():
@@ -1343,14 +1672,14 @@ def login():
                 print(f"[Auth] Failed admin password from {request.remote_addr}.")
                 error = str(e)
             else:
-                if (store.admin_record() or {}).get("totp_secret"):
+                if (store.admin_record(uid) or {}).get("totp_secret"):
                     start_pending("2fa", uid, admin_email)
                     return redirect(url_for("two_factor"))
                 if request.remote_addr in LOOPBACK:
                     start_pending("enroll", uid, admin_email)
                     return redirect(url_for("two_factor_setup"))
-                error = ("Two-factor authentication is not set up yet. Log in once on the dashboard "
-                         "machine itself (https://127.0.0.1:5000) to set it up.")
+                error = ("Two-factor authentication is not set up for this account. Use your one-time "
+                         "setup code on the \"Set up with a code\" page, or log in on the dashboard machine.")
     return render_template_string(LOGIN_HTML, mode="login", error=error)
 
 @app.route("/2fa", methods=["GET", "POST"])
@@ -1365,9 +1694,9 @@ def two_factor():
         if is_locked(key):
             error = "Too many failed attempts. Try again in a few minutes."
         else:
-            secret  = (store.admin_record() or {}).get("totp_secret", "")
+            secret  = (store.admin_record(pending["uid"]) or {}).get("totp_secret", "")
             counter = verify_totp(secret, request.form.get("code"))
-            if counter is not None and store.consume_totp_counter(counter):
+            if counter is not None and store.consume_totp_counter(pending["uid"], counter):
                 clear_failures(key)
                 start_admin_session(pending["uid"], pending["email"])
                 print(f"[Auth] Admin '{pending['email']}' logged in (2FA) from {request.remote_addr}.")
@@ -1398,7 +1727,7 @@ def two_factor_setup():
     if request.method == "POST":
         counter = verify_totp(secret, request.form.get("code"))
         if counter is not None:
-            store.set_admin_totp(secret, counter, now_iso())
+            store.set_admin_totp(pending["uid"], secret, counter, now_iso())
             start_admin_session(pending["uid"], pending["email"])
             print(f"[Auth] 2FA enabled for admin '{pending['email']}'.")
             return redirect(url_for("dashboard"))
@@ -1406,6 +1735,52 @@ def two_factor_setup():
     uri = pyotp.TOTP(secret).provisioning_uri(name=pending["email"], issuer_name="TwinGuard")
     return render_template_string(LOGIN_HTML, mode="2fa_setup", locked=False, error=error,
                                   qr=qr_svg(uri), secret=" ".join(secret[i:i + 4] for i in range(0, len(secret), 4)))
+
+@app.route("/admin-setup", methods=["GET", "POST"])
+def admin_setup():
+    """New admin (or 2FA reset): one-time setup code -> choose password -> enrol authenticator."""
+    error, key = None, f"invite:{request.remote_addr}"
+    pending = get_pending("invite")
+    if request.method == "POST" and request.form.get("step") == "code":
+        email, code = request.form.get("email", "").strip(), request.form.get("setup_code", "")
+        if is_locked(key):
+            error = "Too many failed attempts. Try again in a few minutes."
+        else:
+            uid, rec = store.find_admin_by_email(email)
+            if setup_code_valid(rec, code):
+                start_pending("invite", uid, rec["email"])
+                session["pending"].update(code_hash=rec["setup_code_hash"], secret=pyotp.random_base32())
+                pending = get_pending("invite")
+            else:
+                record_failure(key)
+                print(f"[Auth] Invalid admin setup code from {request.remote_addr}.")
+                error = "Invalid email or setup code, or the code has expired."
+    elif request.method == "POST" and request.form.get("step") == "finish" and pending:
+        rec = store.admin_record(pending["uid"])
+        password, confirm = request.form.get("password", ""), request.form.get("confirm", "")
+        if not (rec and rec.get("setup_code_hash") == pending["code_hash"]
+                and (rec.get("setup_code_expires") or 0) > time.time()):
+            session.clear()
+            return render_template_string(LOGIN_HTML, mode="invite", error="This setup code is no longer valid.")
+        if len(password) < 10:
+            error = "Password must be at least 10 characters"
+        elif password != confirm:
+            error = "Passwords do not match"
+        else:
+            counter = verify_totp(pending["secret"], request.form.get("code"))
+            if counter is None:
+                error = "That code didn't match. Check the phone's time is automatic and try the newest code."
+            else:
+                store.complete_admin_setup(pending["uid"], password, pending["secret"], counter, now_iso())
+                clear_failures(key)
+                start_admin_session(pending["uid"], pending["email"])
+                print(f"[Auth] Admin '{pending['email']}' completed setup (password + 2FA).")
+                return redirect(url_for("dashboard"))
+    if pending:
+        uri = pyotp.TOTP(pending["secret"]).provisioning_uri(name=pending["email"], issuer_name="TwinGuard")
+        return render_template_string(LOGIN_HTML, mode="invite2", error=error, email=pending["email"], qr=qr_svg(uri),
+                                      secret=" ".join(pending["secret"][i:i + 4] for i in range(0, 32, 4)))
+    return render_template_string(LOGIN_HTML, mode="invite", error=error)
 
 @app.route("/logout", methods=["POST"])
 def logout():
