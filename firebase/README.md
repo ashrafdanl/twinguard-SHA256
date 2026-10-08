@@ -8,7 +8,7 @@ something TwinGuard doesn't use.
 
 | What | Where it lives |
 |---|---|
-| Admin accounts | Firebase Authentication (+ `admin` custom claim) + `admins/{uid}` in Firestore |
+| Super admin (one) | Firebase Authentication (+ `admin` custom claim) + `admins/{uid}` in Firestore |
 | Operator accounts | Firebase Authentication + `users/{uid}` in Firestore |
 | Sealed alerts | `alerts/{sha256}` in Firestore |
 | Retention setting | `twinguard_config.json` on the dashboard machine |
@@ -47,12 +47,13 @@ something TwinGuard doesn't use.
 ## 3. Run
 
 ```bash
-# Dashboard (admin's machine). HTTPS only; see "Admin dashboard security" below
-python3 dashboard/make_certs.py          # once, and again whenever this machine's IP changes
+# Dashboard (admin's machine). Plain HTTP by default
 python3 dashboard/dashboard_server.py
+# Encrypted HTTPS instead (recommended on shared Wi-Fi); see "Admin dashboard security"
+python3 dashboard/dashboard_server.py --https
 ```
 
-Open <https://127.0.0.1:5000> **on that machine**. The first visit creates the admin
+Open <http://127.0.0.1:5000> (or `https://` with `--https`) **on that machine**. The first visit creates the admin
 account in Firebase and sets up two-factor authentication. After that, add operators
 under **User Management**. The email and password you set there are what the
 operator uses in the phone app and on the detector.
@@ -135,15 +136,15 @@ is free and open source (cheroot, pyotp, qrcode, cryptography).
 
 | Protection | What it does |
 |---|---|
-| HTTPS only (TLS 1.2+) | Traffic can't be read or altered on the network; plain HTTP is refused |
-| Private certificate authority | `make_certs.py` creates your own CA; devices that install it get a padlock, no warnings |
+| HTTPS with `--https` (TLS 1.2+) | Traffic can't be read or altered on the network. **Without `--https` the dashboard uses plain HTTP: passwords and session cookies cross the network unencrypted** |
+| Private certificate authority | With `--https`, certificates are created/updated automatically for this machine's IPs; devices that install `certs/twinguard-ca.crt` get a padlock, no warnings |
 | Two-factor login | Firebase password **and** a 6-digit authenticator-app code; codes can't be reused |
 | 2FA setup only on the dashboard machine | A stolen password can't be used to enrol the attacker's phone |
 | Brute-force lockout | 5 wrong passwords/codes from an IP → locked for 5 minutes |
 | Session limits | Logged out after 30 min idle or 8 h total, and when the admin is disabled or their password reset in Firebase |
 | CSRF tokens | Other websites can't make your browser perform dashboard actions |
 | Content-Security-Policy (nonces) | Injected scripts can't run, even if an XSS bug slipped in |
-| Secure cookies | `__Host-` cookie: HTTPS-only, not readable by JavaScript, never sent cross-site |
+| Cookies | Not readable by JavaScript, never sent cross-site; with `--https` also a Secure `__Host-` cookie |
 | Trusted hosts | Requests addressed to any other host name are rejected |
 | Security headers | HSTS, no framing (clickjacking), no MIME sniffing, no referrer, no caching of pages |
 
@@ -166,47 +167,37 @@ share. **Never** copy `certs/twinguard-ca.key` or `certs/server.key` anywhere.
   Authorities → Import → tick *Trust this CA to identify websites*.
 
 Then open `https://<dashboard IP>:5000` (the dashboard prints the exact addresses at startup).
+Installing the CA is only needed when you run with `--https`.
+
+### Opening the dashboard from other devices
+
+Other devices must be able to reach the VM. With VMware's default **NAT** network the VM has a
+private `192.168.x.x` address only the host laptop can reach. Either:
+
+- **Bridged networking:** VM → Settings → Network Adapter → *Bridged*. The VM gets an address on
+  your Wi-Fi; the dashboard prints it at startup. (In VMware Player, use *Configure Adapters* to
+  tick only your Wi-Fi adapter.)
+- **NAT port forwarding:** forward host port 5000 to the VM's port 5000 in VMware's NAT settings,
+  allow port 5000 in the host's firewall, and start the dashboard with
+  `--allow-host <laptop Wi-Fi IP>` so requests addressed to the laptop are accepted.
+
+Some campus/hotel Wi-Fi blocks device-to-device traffic ("client isolation"); a phone hotspot
+avoids that.
 
 ### Two-factor authentication
 
 - First login on the dashboard machine shows a QR code. Scan it with any authenticator
   app (Google Authenticator, Microsoft Authenticator, Aegis, 2FAS) and enter the code.
 - After that, every login asks for the password, then the current 6-digit code.
-- **Lost the phone?** Another admin opens **Admin Accounts → Reset 2FA** for you and gives
-  you the new one-time setup code (see below).
-  If you're the only admin: Firebase console → Firestore → `admins` → your uid → delete the
+- **Lost the phone?** Firebase console → Firestore → `admins` → your uid → delete the
   `totp_secret` field, then log in on the dashboard machine itself to set up 2FA again.
+  Only someone with your Firebase console access can do this.
 
-### Workspaces (one per admin)
+### One super admin
 
-Every admin owns an isolated **workspace** (`workspaces/{adminUid}` in Firestore).
-Operators belong to exactly one workspace (`users/{uid}.workspace_id`), and an alert
-belongs to the workspace of the operator whose detector sealed it.
-
-| Role | Sees | Can manage |
-|---|---|---|
-| **Super admin** (the first-run admin) | every workspace, all operators and alerts | admins, any workspace's operators, retention |
-| **Workspace admin** (created on Admin Accounts) | only their workspace's operators and alerts | only their own operators |
-
-Workspaces live inside the free default Firestore database. Truly separate Firestore
-databases ("named databases") need a billing account and get no free quota, so they
-aren't used. The detector, phone app and security rules are unchanged by workspaces.
-
-### Admin accounts
-
-Admins are created only by logged-in admins. There is no public sign-up.
-
-1. **Admin Accounts → Create Admin** (email + display name). The dashboard shows a
-   **one-time setup code** (e.g. `K7QX-2M9P-4TRW`) once. Only its SHA-256 hash is stored.
-2. Give the code to the new admin privately. It works once and expires after 24 hours.
-3. The new admin opens `https://<dashboard>/admin-setup` (or *"New admin? Set up with a
-   one-time code"* on the login page) from any LAN device, enters their email and the code,
-   **chooses their own password** and scans the 2FA QR code. You never learn their password.
-
-Admins can disable/enable other admins and reset their 2FA (which issues a new setup code
-and signs them out). Nobody can disable themselves, reset their own 2FA, or disable the
-last enabled admin. Admin records live in `admins/{uid}` and, like `config/`, can't be
-read or written by phones or detectors.
+The dashboard has exactly **one administrator**, the super admin created on first run.
+There are no other admin accounts; everyone else is an **application user** (operator)
+created under **User Management**, who signs in to the phone app and detector.
 
 ### Optional: firewall
 

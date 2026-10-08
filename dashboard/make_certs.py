@@ -76,19 +76,16 @@ def load_or_create_ca(now):
     return key, cert, True
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Create HTTPS certificates for the TwinGuard dashboard")
-    ap.add_argument("--ip", action="append", default=[], help="extra IP address to include (repeatable)")
-    ap.add_argument("--dns", action="append", default=[], help="extra host name to include (repeatable)")
-    args = ap.parse_args()
-
+def issue_server_cert(extra_ips=(), extra_dns=()):
+    """(Re)issue the server certificate for this machine's current names and IPs.
+    Reuses the CA if it exists. Returns (dns_names, ips, ca_is_new, valid_until)."""
     os.makedirs(CERT_DIR, mode=0o700, exist_ok=True)
     now = datetime.datetime.now(datetime.timezone.utc)
     ca_key, ca_cert, ca_new = load_or_create_ca(now)
 
     host = socket.gethostname()
-    dns = sorted({"localhost", host, f"{host}.local", *args.dns})
-    ips = sorted({"127.0.0.1", *local_ipv4s(), *args.ip}, key=lambda s: ipaddress.ip_address(s))
+    dns = sorted({"localhost", host, f"{host}.local", *extra_dns})
+    ips = sorted({"127.0.0.1", *local_ipv4s(), *extra_ips}, key=lambda s: ipaddress.ip_address(s))
 
     key = ec.generate_private_key(ec.SECP256R1())
     cert = (x509.CertificateBuilder()
@@ -110,8 +107,17 @@ def main():
     with open(SRV_CRT, "wb") as f:
         f.write(cert.public_bytes(serialization.Encoding.PEM))
 
+    return dns, ips, ca_new, cert.not_valid_after_utc
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Create HTTPS certificates for the TwinGuard dashboard")
+    ap.add_argument("--ip", action="append", default=[], help="extra IP address to include (repeatable)")
+    ap.add_argument("--dns", action="append", default=[], help="extra host name to include (repeatable)")
+    args = ap.parse_args()
+    dns, ips, ca_new, until = issue_server_cert(args.ip, args.dns)
     print(f"CA certificate : {CA_CRT} {'(NEW - install it on admin devices)' if ca_new else '(existing, reused)'}")
-    print(f"Server cert    : {SRV_CRT} (valid until {cert.not_valid_after_utc:%Y-%m-%d})")
+    print(f"Server cert    : {SRV_CRT} (valid until {until:%Y-%m-%d})")
     print(f"  names        : {', '.join(dns)}")
     print(f"  IPs          : {', '.join(ips)}")
     print("Restart the dashboard to use the new certificate.")
