@@ -2,7 +2,8 @@
 TwinGuard-SHA256: Firebase uploader for the detection engine
 =============================================================
 Signs in to Firebase Authentication AS THE OPERATOR (email + password) and
-writes each sealed alert to Cloud Firestore through the public REST API, so:
+writes each sealed detection to the operator's own space in Cloud Firestore
+(users/{uid}/detections/{sha256}) through the public REST API, so:
   - no admin/service-account key is needed on detector machines,
   - Firestore security rules decide what this operator may write,
   - an operator disabled by the admin can no longer upload.
@@ -146,7 +147,8 @@ class FirebaseUploader:
 
     def _create_alert(self, alert):
         # The SHA-256 seal is the document id, so a retried upload can never duplicate an alert.
-        r = requests.post(f"{self.base}/alerts", params={"documentId": alert["sha256_hash"]},
+        # Every detection goes to the operator's own space; the dashboard picks up the HIGH ones.
+        r = requests.post(f"{self.base}/users/{self.uid}/detections", params={"documentId": alert["sha256_hash"]},
                           headers=self._headers(), timeout=10,
                           json={"fields": {k: encode_value(v) for k, v in alert.items()}})
         if r.status_code == 409:      # already uploaded by an earlier attempt

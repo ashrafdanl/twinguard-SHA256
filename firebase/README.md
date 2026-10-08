@@ -10,7 +10,7 @@ something TwinGuard doesn't use.
 |---|---|
 | Super admin (one) | Firebase Authentication (+ `admin` custom claim) + `admins/{uid}` in Firestore |
 | Operator accounts | Firebase Authentication + `users/{uid}` in Firestore |
-| Sealed alerts | `alerts/{sha256}` in Firestore |
+| Detections (every severity) | `users/{uid}/detections/{sha256}`, each operator's own space; the dashboard shows the HIGH ones |
 | Retention setting | `twinguard_config.json` on the dashboard machine |
 
 ## 1. Create the project (one time)
@@ -89,32 +89,134 @@ sudo .venv/bin/python detection/detection.py --interface wlan1 --email lily@gmai
 
 ## 4. Phone app integration
 
-Use the free Firebase SDK for your app's platform (Android, iOS, Flutter, React Native…)
-with the same Firebase project.
+The phone app **scans**, saves **every** detection in the operator's own space, and
+only the **critical (HIGH)** ones appear on the admin dashboard. The app never talks
+to the dashboard directly; both use Firebase.
 
-1. **Sign in** with Firebase Auth email/password, using the credentials the admin created.
-   A disabled account fails with `user-disabled`; show "Your account has been
-   disabled by the administrator".
-2. **Read the operator's alerts**. The query **must** filter by the signed-in uid
-   or the security rules reject it:
+```
+Phone app (signed in as the operator)
+   │  every detection, sealed with SHA-256
+   ▼
+users/{uid}/detections/{sha256}    ← operator's own space (HIGH, MEDIUM, LOW)
+users/{uid}/scans/{auto-id}        ← full scan results (all networks), private to the user
+   │  dashboard listens only to severity == "HIGH" (all operators)
+   ▼
+Admin dashboard: critical alerts in full + severity counts of everything
+```
 
+Use the free Firebase SDK for your platform (Android, iOS, Flutter…) with this project.
+
+### 1. Sign in
+Firebase Auth email/password with the credentials the admin created under
+**User Management**. Every user added there *is* an app login, and their space
+`users/{uid}/…` appears automatically the first time the app saves something. A disabled account fails with `user-disabled`: show
+"Your account has been disabled by the administrator".
+
+### 2. Build a detection
+
+| Field | Type | Example |
+|---|---|---|
+| `uid` | string | `FirebaseAuth.currentUser.uid` |
+| `username` | string | from `users/{uid}`: **must equal the profile's `username`** |
+| `severity` | string | `"HIGH"` \| `"MEDIUM"` \| `"LOW"` (HIGH = critical, goes to the dashboard) |
+| `timestamp` | string | UTC ISO-8601 with `Z`, e.g. `"2026-10-08T10:15:30Z"` |
+| `ssid`, `bssid`, `encryption` | string | `"GMI-Student"`, `"AA:BB:CC:DD:EE:FF"`, `"OPN"` |
+| `signal_dbm`, `channel`, `score` | **integer** | `-40`, `6`, `7` (no decimals) |
+| `reasons` | array of strings | `["Unknown BSSID", "Open encryption"]` |
+| `source` | string | `"app"` (optional, recommended) |
+
+Use **integers, not decimals**, anywhere you have numbers, so every platform hashes them identically.
+
+### 3. Seal it (SHA-256)
+1. Take all fields above (**not** `sha256_hash`).
+2. Serialize as JSON with **keys sorted alphabetically** (also inside nested objects),
+   **no spaces**, and text as **UTF-8** (don't escape non-English characters as `\uXXXX`).
    ```
-   collection("alerts")
-     .where("uid", "==", currentUser.uid)
-     .where("severity", "==", "HIGH")      // optional: dashboard shows HIGH only
-     .orderBy("timestamp", "desc")
+   {"bssid":"AA:BB:CC:DD:EE:FF","channel":6,"encryption":"OPN","reasons":["Unknown BSSID"],"severity":"HIGH",...}
    ```
+3. `sha256_hash` = lowercase hex SHA-256 of those UTF-8 bytes. Add it to the detection.
 
-   Use a realtime listener (`onSnapshot` / `snapshots()`), not polling. It only
-   downloads new alerts, which keeps you inside the free read quota.
-3. **Profile**: `users/{currentUser.uid}` has `username`, `full_name`, `email`, `enabled`.
+The dashboard recomputes this and shows **✓ VALID** or **✗ TAMPERED**.
 
-Alert fields: `timestamp` (UTC ISO text; show it in GMT+8), `severity`, `ssid`,
-`bssid`, `signal_dbm`, `channel`, `encryption`, `reasons` (list), `score`,
-`trusted_bssids`, `uid`, `username`, `sha256_hash`, and `simulated: true` on test
-alerts from `--simulate` (absent on real ones). Show those with a "TEST" label.
+### 4. Save it in the operator's space
+Write to `users/{uid}/detections/{sha256_hash}`, using the **hash as the document id**
+and `set()`/`create()`, not `add()`. Retrying the same detection never duplicates it.
+The security rules reject writes to anyone else's space, unsealed or malformed
+detections, and any edit or delete.
 
-Apps cannot edit or delete alerts. The rules forbid it, which preserves the evidence.
+**Flutter (Dart)**
+```dart
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+
+dynamic _sorted(dynamic v) => v is Map
+    ? Map.fromEntries((v.keys.toList()..sort()).map((k) => MapEntry(k, _sorted(v[k]))))
+    : v is List ? v.map(_sorted).toList() : v;
+
+Future<void> saveDetection(Map<String, dynamic> d, String username) async {
+  final uid = FirebaseAuth.instance.currentUser!.uid;
+  d = {...d, 'uid': uid, 'username': username, 'source': 'app',
+       'timestamp': DateTime.now().toUtc().toIso8601String().split('.').first + 'Z'};
+  final hash = sha256.convert(utf8.encode(jsonEncode(_sorted(d)))).toString();
+  await FirebaseFirestore.instance
+      .doc('users/$uid/detections/$hash').set({...d, 'sha256_hash': hash});
+}
+```
+
+**Android (Kotlin)**
+```kotlin
+fun canonical(v: Any?): String = when (v) {
+    is Map<*, *> -> v.keys.map { it.toString() }.sorted()
+        .joinToString(",", "{", "}") { k -> JSONObject.quote(k) + ":" + canonical(v[k]) }
+    is List<*> -> v.joinToString(",", "[", "]") { canonical(it) }
+    is String -> JSONObject.quote(v).replace("\\/", "/")
+    null -> "null"
+    else -> v.toString()           // Int / Long / Boolean
+}
+
+fun saveDetection(d: Map<String, Any>, username: String) {
+    val uid = FirebaseAuth.getInstance().currentUser!!.uid
+    val doc = d + mapOf("uid" to uid, "username" to username, "source" to "app",
+        "timestamp" to Instant.now().truncatedTo(ChronoUnit.SECONDS).toString())
+    val hash = MessageDigest.getInstance("SHA-256").digest(canonical(doc).toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+    Firebase.firestore.document("users/$uid/detections/$hash").set(doc + ("sha256_hash" to hash))
+}
+```
+
+### 5. Save full scan results (optional, everything the app saw)
+Each user's space also has `users/{uid}/scans/`, for complete scans including normal
+networks. Use an auto-generated document id (`add()`):
+
+```
+users/{uid}/scans/{auto-id} = {
+  "uid": "<uid>", "timestamp": "2026-10-08T10:15:30Z", "source": "app",
+  "networks": [ {"ssid": "GMI-Student", "bssid": "A4:2B:B0:11:22:01", "signal_dbm": -61,
+                 "channel": 6, "encryption": "WPA2"}, ... ]        // up to 300 networks
+}
+```
+Only that user can read or write their scans, nobody can edit or delete them, and the
+admin dashboard doesn't read them.
+
+**Free quota:** each saved scan is 1 write, and the free plan allows **20,000 writes/day for
+the whole project**. Saving a scan every 10 s uses 8,640 writes/day *per phone*. Save a
+scan every few minutes, or only when the list of networks changes.
+
+### 6. Show the operator's own history
+```
+collection("users/{uid}/detections").orderBy("timestamp", descending)             // everything
+collection("users/{uid}/detections").where("severity","==","HIGH").orderBy(...)   // critical only
+```
+Use a realtime listener (`snapshots()` / `addSnapshotListener`). It downloads only new
+detections, which keeps you inside the free read quota. Detections marked
+`"simulated": true` come from the detector's `--simulate` test mode; label them "TEST".
+
+### Indexes needed (one-time, Firebase console → Firestore → Indexes)
+- **Single field → Add exemption:** collection `detections`, field `severity`, enable **Collection group, Ascending**
+- **Single field → Add exemption:** collection `detections`, field `timestamp`, enable **Collection group, Ascending**
+- **Composite:** collection `detections`, `severity` Ascending + `timestamp` Descending
 
 ## Free-tier limits (Spark)
 

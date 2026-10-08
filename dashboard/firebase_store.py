@@ -6,19 +6,21 @@ Uses only Firebase's free Spark plan features:
   - Cloud Firestore for user profiles and the sealed forensic alerts
 
 Firestore layout:
-  users/{uid}          application user (operator) profile: username, full_name,
-                       email, role, enabled, created_at
-  alerts/{sha}         sealed alert written by an operator's detection engine
+  users/{uid}                        application user (operator) profile: username,
+                                     full_name, email, role, enabled, created_at
+  users/{uid}/detections/{sha256}    the operator's own space: EVERY sealed detection from
+                                     their phone app or detector (all severities)
   admins/{uid}         the single super admin of the dashboard + their 2FA (server-only)
 
 There is exactly one dashboard admin (the super admin, created on first run).
 Everyone else is an application user managed from the dashboard.
 
-The dashboard keeps live in-memory copies of `users` and `alerts` through
-Firestore listeners, so the 10-second browser refresh costs no Firestore reads.
+The dashboard receives only CRITICAL (severity HIGH) detections: it keeps a live
+in-memory copy of them through a collection-group listener, plus severity counts of
+all detections (cheap count queries, refreshed every minute) for the charts.
 """
 
-import json, os, threading
+import json, os, threading, time
 from datetime import datetime, timezone
 import requests
 import firebase_admin
@@ -69,37 +71,90 @@ class FirebaseStore:
         self._alerts       = {}
         self._users        = {}
         self._admin_exists = False
-        self._watches = [
-            self.db.collection("alerts").on_snapshot(self._on_alerts),
-            self.db.collection("users").on_snapshot(self._on_users),
-        ]
+        self._counts       = (0, None)    # (fetched_at, {"HIGH": n, ...})
+        self._users_watch    = self.db.collection("users").on_snapshot(self._on_users)
+        self._critical_watch = None
+        self._ensure_critical_watch()
+        threading.Thread(target=self._watchdog, daemon=True).start()
+
+    def _ensure_critical_watch(self):
+        """(Re)subscribe to critical detections from every operator's space. The query
+        needs a collection-group index; until it exists the stream stops, so retry."""
+        if self._critical_watch is not None and self._critical_watch.is_active:
+            return True
+        if self._critical_watch is not None:
+            self._critical_watch.close()
+        try:
+            list(self.db.collection_group("detections")
+                 .where(filter=FieldFilter("severity", "==", "HIGH")).limit(1).stream())
+        except Exception as e:
+            if not getattr(self, "_index_warned", False):
+                print(f"[Firebase] Waiting for the 'detections' index (see firebase/README.md): {str(e)[:120]}")
+                self._index_warned = True
+            self._critical_watch = None
+            return False
+        with self._lock:
+            self._alerts.clear()
+        self._critical_watch = (self.db.collection_group("detections")
+                                .where(filter=FieldFilter("severity", "==", "HIGH")).on_snapshot(self._on_alerts))
+        if getattr(self, "_index_warned", False):
+            print("[Firebase] ✓ 'detections' index ready: critical alerts are live.")
+            self._index_warned = False
+        return True
+
+    def _watchdog(self):
+        while True:
+            time.sleep(30)
+            try:
+                self._ensure_critical_watch()
+            except Exception as e:
+                print(f"[Firebase] Listener check failed: {e}")
 
     # ── Live caches ──────────────────────────────────────────────────────────
-    def _apply(self, cache, changes):
+    def _apply(self, cache, changes, by_path=False):
         with self._lock:
             for ch in changes:
+                # detections: full path (ids are only unique within one operator's space)
+                key = ch.document.reference.path if by_path else ch.document.id
                 if ch.type.name == "REMOVED":
-                    cache.pop(ch.document.id, None)
+                    cache.pop(key, None)
                 else:
-                    cache[ch.document.id] = ch.document.to_dict()
+                    cache[key] = ch.document.to_dict()
 
     def _on_alerts(self, _snap, changes, _read_time):
-        self._apply(self._alerts, changes)
+        self._apply(self._alerts, changes, by_path=True)
 
     def _on_users(self, _snap, changes, _read_time):
         self._apply(self._users, changes)
 
-    # ── Alerts ───────────────────────────────────────────────────────────────
+    # ── Detections ───────────────────────────────────────────────────────────
     def alerts(self):
+        """Critical (HIGH) detections from all operators, oldest first."""
         with self._lock:
             entries = [dict(a) for a in self._alerts.values()]
         return sorted(entries, key=lambda a: str(a.get("timestamp", "")))
 
+    def severity_counts(self, max_age=60):
+        """Counts of ALL detections per severity (aggregation queries: ~1 read per 1000)."""
+        fetched, counts = self._counts
+        if counts is None or time.time() - fetched > max_age:
+            group = self.db.collection_group("detections")
+            try:
+                counts = {sev: int(group.where(filter=FieldFilter("severity", "==", sev)).count().get()[0][0].value)
+                          for sev in ("HIGH", "MEDIUM", "LOW")}
+            except Exception as e:     # index not serving yet: show what we have instead of failing
+                print(f"[Firebase] Severity counts unavailable, using critical alerts only: {str(e)[:120]}")
+                counts = {"HIGH": len(self.alerts()), "MEDIUM": 0, "LOW": 0}
+                self._counts = (time.time() - max_age + 10, counts)   # retry in ~10 s
+                return dict(counts)
+            self._counts = (time.time(), counts)
+        return dict(counts)
+
     def purge_alerts_before(self, cutoff_iso):
-        """Delete alerts whose timestamp is older than cutoff_iso. Returns the count."""
+        """Delete detections (every operator's space) older than cutoff_iso. Returns the count."""
         removed = 0
         while True:
-            docs = list(self.db.collection("alerts")
+            docs = list(self.db.collection_group("detections")
                         .where(filter=FieldFilter("timestamp", "<", cutoff_iso))
                         .limit(400).stream())
             if not docs:

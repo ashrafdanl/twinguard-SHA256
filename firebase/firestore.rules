@@ -21,34 +21,49 @@ service cloud.firestore {
         && profile().enabled == true;
     }
 
-    // Operators may read their own profile; only the admin dashboard writes profiles.
+    // A sealed detection: the SHA-256 seal is the document id
+    function validDetection(uid, detectionId) {
+      let d = request.resource.data;
+      return d.uid == uid
+        && d.username == profile().username
+        && d.sha256_hash is string
+        && d.sha256_hash.size() == 64
+        && d.sha256_hash == detectionId
+        && d.severity in ['HIGH', 'MEDIUM', 'LOW']
+        && d.timestamp is string;
+    }
+
+    // Operator profile: readable by its owner; only the admin dashboard writes profiles.
     match /users/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
       allow write: if false;
+
+      // The operator's own space: EVERY detection from their phone app or detector.
+      //   read:   the operator, only their own
+      //   create: the operator's app/detector, only as themselves, sealed
+      //   update/delete: never from clients, so the evidence cannot be altered
+      // The admin dashboard receives only the HIGH (critical) ones.
+      match /detections/{detectionId} {
+        allow read: if isActiveOperator() && request.auth.uid == uid;
+        allow create: if isActiveOperator() && request.auth.uid == uid
+          && validDetection(uid, detectionId);
+        allow update, delete: if false;
+      }
+
+      // The operator's own space: FULL scan results (every network seen in one scan).
+      // Private to the operator; the admin dashboard does not read these.
+      match /scans/{scanId} {
+        allow read: if isActiveOperator() && request.auth.uid == uid;
+        allow create: if isActiveOperator() && request.auth.uid == uid
+          && request.resource.data.uid == uid
+          && request.resource.data.timestamp is string
+          && request.resource.data.networks is list
+          && request.resource.data.networks.size() <= 300;
+        allow update, delete: if false;
+      }
     }
 
-    // Sealed forensic alerts.
-    //   read:   an active operator, only their own alerts
-    //           (app queries must filter: where("uid", "==", currentUser.uid))
-    //   create: an active operator's detection engine, only as themselves,
-    //           with the SHA-256 seal as the document id
-    //   update/delete: never from clients, so the evidence cannot be altered
-    match /alerts/{alertId} {
-      allow read: if isActiveOperator() && resource.data.uid == request.auth.uid;
-
-      allow create: if isActiveOperator()
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.username == profile().username
-        && request.resource.data.sha256_hash is string
-        && request.resource.data.sha256_hash.size() == 64
-        && request.resource.data.sha256_hash == alertId
-        && request.resource.data.severity in ['HIGH', 'MEDIUM', 'LOW']
-        && request.resource.data.timestamp is string;
-
-      allow update, delete: if false;
-    }
-
-    // Admin marker and anything else: server only.
+    // Admin records, the old shared alerts collection, and anything else: server only.
     match /{document=**} {
       allow read, write: if false;
     }

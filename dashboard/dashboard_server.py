@@ -76,14 +76,18 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 def verify_sha256(entry):
-    """Verify integrity. Strip sha256_hash AND integrity_ok before recomputing."""
+    """Verify integrity. Strip sha256_hash AND integrity_ok before recomputing.
+    Two accepted canonical forms (see firebase/README.md, "Sealing a detection"):
+      v1  Python detector: json.dumps(sort_keys=True)                 -> '{"a": 1, "b": "x"}'
+      v2  phone app:       sorted keys, no spaces, UTF-8 (no \\u escapes) -> '{"a":1,"b":"x"}'"""
     stored  = entry.get("sha256_hash", "")
     payload = {k: v for k, v in entry.items()
                if k not in ("sha256_hash", "integrity_ok")}
-    computed = hashlib.sha256(
-        json.dumps(payload, sort_keys=True).encode()
-    ).hexdigest()
-    return computed == stored
+    for canonical in (json.dumps(payload, sort_keys=True),
+                      json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)):
+        if hmac.compare_digest(hashlib.sha256(canonical.encode("utf-8")).hexdigest(), stored):
+            return True
+    return False
 
 # ── Admin authentication & web security ──────────────────────────────────────
 LOOPBACK = ("127.0.0.1", "::1")
@@ -263,14 +267,16 @@ def get_logs():
 
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
-    logs  = store.alerts()
-    users = store.user_profiles().values()
-    cfg   = load_config()
+    logs   = store.alerts()
+    counts = store.severity_counts()
+    users  = store.user_profiles().values()
+    cfg    = load_config()
     return jsonify({
-        "total_alerts":   len(logs),
-        "high":           sum(1 for l in logs if l.get("severity") == "HIGH"),
-        "medium":         sum(1 for l in logs if l.get("severity") == "MEDIUM"),
-        "low":            sum(1 for l in logs if l.get("severity") == "LOW"),
+        "total_alerts":   sum(counts.values()),        # every detection in all operators' spaces
+        "high":           counts["HIGH"],
+        "medium":         counts["MEDIUM"],
+        "low":            counts["LOW"],
+        "critical_shown": len(logs),                    # HIGH detections delivered to the dashboard
         "total_users":    len(users),
         "active_users":   sum(1 for u in users if u.get("enabled")),
         "retention_days": cfg.get("retention_days", 30),
@@ -620,24 +626,24 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
   <section id="overview">
     <div class="sec-head"><div class="sec-title">Threat Overview</div><div class="sec-note">auto-refresh 10s</div></div>
     <div class="stats-grid">
-      <div class="stat-card total"><div class="stat-label">Total Alerts</div><div class="stat-value" id="stat-total">0</div><div class="stat-sub">in retention window</div></div>
-      <div class="stat-card recent"><div class="stat-label">Alerts (24h)</div><div class="stat-value" id="stat-24h">0</div><div class="stat-sub">last 24 hours</div></div>
+      <div class="stat-card total"><div class="stat-label">Total Detections</div><div class="stat-value" id="stat-total">0</div><div class="stat-sub">all severities, all users</div></div>
+      <div class="stat-card recent"><div class="stat-label">Critical (24h)</div><div class="stat-value" id="stat-24h">0</div><div class="stat-sub">last 24 hours</div></div>
       <div class="stat-card integrity" id="card-integrity" title="Share of forensic log entries whose SHA-256 hash still matches their contents. Below 100% means an entry was edited after it was recorded."><div class="stat-label">Log Integrity</div><div class="stat-value" id="stat-integrity">—</div><div class="stat-sub" id="stat-integrity-sub">no entries</div></div>
-      <div class="stat-card high"><div class="stat-label">High Severity</div><div class="stat-value" id="stat-high">0</div><div class="stat-sub">shown in threat log</div></div>
+      <div class="stat-card high"><div class="stat-label">Critical Alerts</div><div class="stat-value" id="stat-high">0</div><div class="stat-sub">HIGH · sent to dashboard</div></div>
       <div class="stat-card users"><div class="stat-label">Total Users</div><div class="stat-value" id="stat-users">0</div><div class="stat-sub">registered operators</div></div>
       <div class="stat-card active"><div class="stat-label">Active Users</div><div class="stat-value" id="stat-active">0</div><div class="stat-sub">accounts enabled</div></div>
     </div>
 
     <div class="chart-grid">
       <div class="panel chart-card">
-        <div class="chart-title">Severity Distribution</div>
+        <div class="chart-title">Severity Distribution <b>all detections</b></div>
         <div class="donut-wrap">
           <svg class="donut" id="sev-donut" viewBox="0 0 200 200" role="img" aria-label="Alerts by severity"></svg>
           <div class="legend" id="sev-legend"></div>
         </div>
       </div>
       <div class="panel chart-card">
-        <div class="chart-title">Alerts · Last 14 Days (GMT+8) <b id="trend-sum"></b></div>
+        <div class="chart-title">Critical Alerts · Last 14 Days (GMT+8) <b id="trend-sum"></b></div>
         <svg class="svg-chart" id="trend-chart" role="img" aria-label="Daily alerts by severity over the last 14 days"></svg>
         <div class="legend inline" id="trend-legend"></div>
       </div>
@@ -645,11 +651,11 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
 
     <div class="chart-grid even">
       <div class="panel chart-card">
-        <div class="chart-title">Detection Reasons <b>alerts triggering each rule</b></div>
+        <div class="chart-title">Detection Reasons <b>critical alerts per rule</b></div>
         <div class="hbars" id="reason-bars"></div>
       </div>
       <div class="panel chart-card">
-        <div class="chart-title">Most Targeted SSIDs <b>top 6</b></div>
+        <div class="chart-title">Most Targeted SSIDs <b>critical · top 6</b></div>
         <div class="hbars" id="ssid-bars"></div>
       </div>
     </div>
@@ -806,7 +812,7 @@ async function loadData(background = false) {
     document.getElementById('stat-users').textContent  = stats.total_users;
     document.getElementById('stat-active').textContent = stats.active_users;
     renderThreatLog();
-    renderCharts(allLogs);
+    renderCharts(allLogs, stats);
   } catch(e) {
     document.getElementById('log-body').innerHTML =
       '<tr><td colspan="8" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
@@ -945,9 +951,9 @@ function bindTip(el, title, rows) {
   el.addEventListener('blur', hideTip);
 }
 
-function renderDonut(logs) {
+function renderDonut(stats) {
   const svg = document.getElementById('sev-donut'), legend = document.getElementById('sev-legend');
-  const counts = SEV.map(s => logs.filter(l => sevOf(l) === s.key).length);
+  const counts = SEV.map(s => Number(stats[s.key.toLowerCase()]) || 0);   // all detections, not just critical
   const total  = counts.reduce((a, b) => a + b, 0);
   const R = 80, C = 2 * Math.PI * R, GAP = 3, nonZero = counts.filter(Boolean).length;
   svg.replaceChildren(svgEl('circle', {cx:100, cy:100, r:R, class:'ring'}));
@@ -1064,10 +1070,10 @@ function renderStats(logs) {
   document.getElementById('card-integrity').classList.toggle('bad', bad > 0);
 }
 
-function renderCharts(logs) {
+function renderCharts(logs, stats) {
   hideTip();
   renderStats(logs);
-  renderDonut(logs);
+  renderDonut(stats);
   renderTrend(logs);
 
   const reasons = Object.fromEntries(KNOWN_REASONS.map(r => [r, 0]));
