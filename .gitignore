@@ -30,3 +30,6 @@ firebase-service-account.json
 
 # Dashboard output
 dashboard.log
+
+# HTTPS certificates and private keys (dashboard/make_certs.py)
+certs/

@@ -47,14 +47,15 @@ something TwinGuard doesn't use.
 ## 3. Run
 
 ```bash
-# Dashboard (admin's machine)
+# Dashboard (admin's machine). HTTPS only; see "Admin dashboard security" below
+python3 dashboard/make_certs.py          # once, and again whenever this machine's IP changes
 python3 dashboard/dashboard_server.py
 ```
 
-Open <http://127.0.0.1:5000> **on that machine**. The first visit creates the admin
-account in Firebase. After that, add operators under **User Management**. The email
-and password you set there are what the operator uses in the phone app and on
-the detector.
+Open <https://127.0.0.1:5000> **on that machine**. The first visit creates the admin
+account in Firebase and sets up two-factor authentication. After that, add operators
+under **User Management**. The email and password you set there are what the
+operator uses in the phone app and on the detector.
 
 ```bash
 # Detection engine, signed in as an operator (asks for their password)
@@ -111,3 +112,61 @@ Apps cannot edit or delete alerts. The rules forbid it, which preserves the evid
 
 If a quota runs out, Firestore stops serving requests until it resets the next
 day (Pacific time). Nothing is charged on the Spark plan.
+
+## Admin dashboard security
+
+The dashboard is built to be opened from devices on the same LAN. Everything below
+is free and open source (cheroot, pyotp, qrcode, cryptography).
+
+| Protection | What it does |
+|---|---|
+| HTTPS only (TLS 1.2+) | Traffic can't be read or altered on the network; plain HTTP is refused |
+| Private certificate authority | `make_certs.py` creates your own CA; devices that install it get a padlock, no warnings |
+| Two-factor login | Firebase password **and** a 6-digit authenticator-app code; codes can't be reused |
+| 2FA setup only on the dashboard machine | A stolen password can't be used to enrol the attacker's phone |
+| Brute-force lockout | 5 wrong passwords/codes from an IP → locked for 5 minutes |
+| Session limits | Logged out after 30 min idle or 8 h total, and when the admin is disabled or their password reset in Firebase |
+| CSRF tokens | Other websites can't make your browser perform dashboard actions |
+| Content-Security-Policy (nonces) | Injected scripts can't run, even if an XSS bug slipped in |
+| Secure cookies | `__Host-` cookie: HTTPS-only, not readable by JavaScript, never sent cross-site |
+| Trusted hosts | Requests addressed to any other host name are rejected |
+| Security headers | HSTS, no framing (clickjacking), no MIME sniffing, no referrer, no caching of pages |
+
+### Install the CA certificate on each admin device (once)
+
+Copy `certs/twinguard-ca.crt` to the device (USB, email to yourself…). It is safe to
+share. **Never** copy `certs/twinguard-ca.key` or `certs/server.key` anywhere.
+
+- **Windows:** double-click the file → *Install Certificate* → *Local Machine* →
+  *Place all certificates in the following store* → **Trusted Root Certification Authorities**.
+- **macOS:** double-click → Keychain Access → open the certificate → *Trust* →
+  *When using this certificate:* **Always Trust**.
+- **Android:** Settings → Security → *Encryption & credentials* → *Install a certificate* →
+  **CA certificate**.
+- **iPhone/iPad:** open the file → Settings → *Profile Downloaded* → Install; then
+  Settings → General → About → *Certificate Trust Settings* → turn it on.
+- **Linux / Kali (Chrome/Chromium):** `sudo cp certs/twinguard-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates`,
+  then in Chrome: Settings → Privacy and security → Security → Manage certificates → Authorities → Import.
+- **Firefox (any OS):** Settings → Privacy & Security → Certificates → *View Certificates* →
+  Authorities → Import → tick *Trust this CA to identify websites*.
+
+Then open `https://<dashboard IP>:5000` (the dashboard prints the exact addresses at startup).
+
+### Two-factor authentication
+
+- First login on the dashboard machine shows a QR code. Scan it with any authenticator
+  app (Google Authenticator, Microsoft Authenticator, Aegis, 2FAS) and enter the code.
+- After that, every login asks for the password, then the current 6-digit code.
+- **Lost the phone?** In the Firebase console → Firestore → `config` → `admin`, delete the
+  `totp_secret` field. Then log in on the dashboard machine itself to set up 2FA again.
+  Only someone with your Firebase console access can do this.
+
+### Optional: firewall
+
+Allow the dashboard port only from your LAN, for example with ufw:
+
+```bash
+sudo ufw allow from 192.168.184.0/24 to any port 5000 proto tcp
+sudo ufw enable
+```
+

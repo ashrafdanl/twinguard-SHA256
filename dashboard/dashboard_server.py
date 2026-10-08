@@ -17,14 +17,25 @@ Install:
 Setup:
     see firebase/README.md (one-time Firebase project setup)
 
+Security (LAN):
+  - HTTPS only (TLS 1.2+), served by cheroot; certificates from make_certs.py
+  - Admin login = Firebase password + authenticator-app code (TOTP 2FA)
+  - CSRF tokens, strict Content-Security-Policy, secure cookies, idle timeout
+
 Run:
-    python3 dashboard_server.py
-Then open: http://127.0.0.1:5000
+    python3 dashboard/make_certs.py        # once, and when the IP changes
+    python3 dashboard/dashboard_server.py
+Then open: https://127.0.0.1:5000
 """
 
-import json, hashlib, os, re, secrets, sys, threading, time
+import argparse, hmac, json, hashlib, ipaddress, os, re, secrets, ssl, sys, threading, time
 from datetime import datetime, timezone, timedelta
-from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
+import pyotp, qrcode, qrcode.image.svg
+from cheroot import wsgi
+from cheroot.ssl.builtin import BuiltinSSLAdapter
+from cryptography import x509
+from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for, g
+from markupsafe import Markup
 from firebase_store import FirebaseStore, FirebaseError, FirebaseNotConfigured
 
 app      = Flask(__name__)
@@ -32,6 +43,16 @@ CFG_FILE = "twinguard_config.json"
 SECRET_FILE = "twinguard_secret.key"
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 EMAIL_RE    = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRV_CRT  = os.path.join(BASE_DIR, "certs", "server.crt")
+SRV_KEY  = os.path.join(BASE_DIR, "certs", "server.key")
+
+IDLE_TIMEOUT     = 30 * 60      # log out after 30 min without admin activity
+ABSOLUTE_TIMEOUT = 8 * 3600     # and always after 8 h
+RECHECK_SECONDS  = 5 * 60       # re-verify the admin account with Firebase
+PENDING_SECONDS  = 5 * 60       # time allowed between password and 2FA code
+MAX_2FA_TRIES    = 5
 
 store = None  # FirebaseStore, created in main()
 
@@ -63,10 +84,10 @@ def verify_sha256(entry):
     ).hexdigest()
     return computed == stored
 
-# ── Admin authentication ──────────────────────────────────────────────────────
+# ── Admin authentication & web security ──────────────────────────────────────
 LOOPBACK = ("127.0.0.1", "::1")
-# Endpoints reachable without an admin session
-PUBLIC_ENDPOINTS = {"login", "setup", "static"}
+# Pages reachable without a full admin session (they check their own state)
+PUBLIC_ENDPOINTS = {"login", "setup", "two_factor", "two_factor_setup", "logout", "static"}
 
 def load_secret_key():
     if os.path.exists(SECRET_FILE):
@@ -80,12 +101,15 @@ def load_secret_key():
 
 app.config.update(
     SECRET_KEY=load_secret_key(),
+    SESSION_COOKIE_NAME="__Host-twinguard",   # __Host-: HTTPS only, this host only, path /
+    SESSION_COOKIE_SECURE=True,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Strict",
-    PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+    PERMANENT_SESSION_LIFETIME=timedelta(seconds=ABSOLUTE_TIMEOUT),
+    MAX_CONTENT_LENGTH=64 * 1024,
 )
 
-# Brute-force throttle: 5 failures per IP locks it for 5 minutes
+# Brute-force throttle: 5 failures (password or 2FA) per IP locks it for 5 minutes
 failed_lock     = threading.Lock()
 failed_attempts = {}
 MAX_FAILS, LOCK_SECONDS = 5, 300
@@ -104,18 +128,107 @@ def clear_failures(key):
     with failed_lock:
         failed_attempts.pop(key, None)
 
+def csrf_token():
+    if "csrf" not in session:
+        session["csrf"] = secrets.token_urlsafe(32)
+    return session["csrf"]
+
+@app.context_processor
+def template_security():
+    return {"csrf_token": csrf_token, "csp_nonce": g.get("csp_nonce", "")}
+
+# ── Session states: pending (password OK, 2FA not yet) -> full admin session ──
+def start_pending(kind, uid, email):
+    session.clear()
+    session["pending"] = {"kind": kind, "uid": uid, "email": email, "at": time.time(), "tries": 0}
+
+def get_pending(kind):
+    p = session.get("pending")
+    if not p or p.get("kind") != kind or time.time() - p.get("at", 0) > PENDING_SECONDS:
+        return None
+    return p
+
+def start_admin_session(uid, email):
+    session.clear()                      # new CSRF token, no pending state
+    session.permanent = True
+    now = time.time()
+    session.update(admin=email, admin_uid=uid, login_at=now, last_active=now, checked_at=now)
+
+def admin_session_valid():
+    if not session.get("admin"):
+        return False
+    now = time.time()
+    if now - session.get("login_at", 0) > ABSOLUTE_TIMEOUT or now - session.get("last_active", 0) > IDLE_TIMEOUT:
+        return False
+    if now - session.get("checked_at", 0) > RECHECK_SECONDS:
+        # disabled, admin claim removed, or sessions revoked (password reset) -> out
+        if not store.admin_account_ok(session.get("admin_uid", ""), session.get("login_at", 0) + 120):
+            return False
+        session["checked_at"] = now
+    if not request.headers.get("X-Background"):   # the 10 s auto-refresh is not admin activity
+        session["last_active"] = now
+    return True
+
+def verify_totp(secret, code):
+    """Return the matching TOTP time-step (current +/- 1), or None."""
+    code = re.sub(r"\s", "", code or "")
+    if not re.fullmatch(r"[0-9]{6}", code):
+        return None
+    totp, step = pyotp.TOTP(secret), int(time.time()) // 30
+    for counter in (step - 1, step, step + 1):
+        if hmac.compare_digest(totp.generate_otp(counter), code):
+            return counter
+    return None
+
+def qr_svg(data):
+    img = qrcode.make(data, image_factory=qrcode.image.svg.SvgPathImage, box_size=8, border=2)
+    return Markup(img.to_string(encoding="unicode"))
+
 @app.before_request
-def require_admin():
+def security_checks():
+    g.csp_nonce = secrets.token_urlsafe(16)
+    request.host                  # raises 400 Bad Request if the Host isn't in TRUSTED_HOSTS
+    if request.method == "POST":
+        sent = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
+        if not sent or not hmac.compare_digest(sent, session.get("csrf", "")):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Security token expired. Reload the page."}), 403
+            return redirect(request.path)          # stale form: show it again with a fresh token
     if request.endpoint in PUBLIC_ENDPOINTS:
         return None
-    if not session.get("admin"):
+    if not admin_session_valid():
         if request.path.startswith("/api/"):
+            session.clear()
             return jsonify({"error": "Authentication required"}), 401
+        for kind, page in (("enroll", "two_factor_setup"), ("2fa", "two_factor")):
+            if get_pending(kind):              # mid-login: continue where they left off
+                return redirect(url_for(page))
+        session.clear()
         return redirect(url_for("login" if store.admin_exists() else "setup"))
-    # Session-authenticated writes must be real JSON requests (blocks cross-site form CSRF)
+    # Session-authenticated API writes must be JSON (defence in depth with the CSRF token)
     if request.method == "POST" and request.path.startswith("/api/") and not request.is_json:
         return jsonify({"error": "Content-Type must be application/json"}), 415
     return None
+
+@app.after_request
+def security_headers(resp):
+    n = g.get("csp_nonce", "")
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        f"script-src 'nonce-{n}'; "
+        f"style-src 'self' 'nonce-{n}' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
+        "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+    resp.headers["Strict-Transport-Security"] = "max-age=31536000"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+    resp.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    if request.endpoint != "static":
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 @app.errorhandler(FirebaseError)
 def firebase_error(e):
@@ -229,9 +342,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TwinGuard-SHA256 | Dashboard</title>
+<meta name="csrf-token" content="{{ csrf_token() }}">
 <link rel="icon" type="image/png" href="/static/favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;500;700;900&display=swap" rel="stylesheet">
-<style>
+<style nonce="{{ csp_nonce }}">
 :root {
   --accent:#4fc3f7; --accent2:#2b8fe0; --cyan:#7ddcff;
   --danger:#ff5a76; --warning:#ffb547; --safe:#3ee6a8; --violet:#a78bfa;
@@ -478,9 +592,9 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
     <a href="#settings"><span class="ico">⚙</span>Settings</a>
   </nav>
   <div class="side-foot">
-    <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn">☀️ Light Mode</button>
+    <button class="theme-toggle" id="theme-btn" type="button">☀️ Light Mode</button>
     <div class="sys-line">SIGNED IN: {{ admin }}<br>ROLE: ADMINISTRATOR</div>
-    <form method="post" action="/logout"><button class="btn sm danger logout" type="submit">⏻ Log Out</button></form>
+    <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm danger logout" type="submit">⏻ Log Out</button></form>
   </div>
 </aside>
 
@@ -539,9 +653,9 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
     <div class="sec-head"><div class="sec-title">Threat Log</div><div class="sec-note">HIGH severity only · one log per user · SHA-256 sealed</div></div>
     <div class="refresh-bar"><div class="refresh-fill" id="rfill"></div></div>
     <div class="controls">
-      <button class="btn primary" onclick="loadData()">↻ Refresh</button>
-      <input class="search" id="search" type="text" placeholder="Filter by SSID or BSSID..." oninput="filterTable()">
-      <button class="btn" onclick="exportLogs()">⬇ Export JSON</button>
+      <button class="btn primary" id="btn-refresh" type="button">↻ Refresh</button>
+      <input class="search" id="search" type="text" placeholder="Filter by SSID or BSSID...">
+      <button class="btn" id="btn-export" type="button">⬇ Export JSON</button>
     </div>
     <div class="user-tabs" id="user-tabs" role="tablist" aria-label="Threat log by user"></div>
     <div class="log-owner" id="log-owner"></div>
@@ -561,11 +675,11 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
   <section id="users">
     <div class="sec-head"><div class="sec-title">User Management</div><div class="sec-note">operator accounts for the TwinGuard app</div></div>
     <div class="panel">
-      <form class="user-form" id="user-form" onsubmit="addUser(event)">
+      <form class="user-form" id="user-form">
         <label>Username<input class="field" id="u-username" required minlength="3" maxlength="32" placeholder="operator01"></label>
         <label>Full Name<input class="field" id="u-fullname" maxlength="80" placeholder="Ali Ahmad"></label>
         <label>Email (app sign-in)<input class="field" id="u-email" type="email" required maxlength="120" placeholder="ali@example.com"></label>
-        <label>Password<input class="field" id="u-password" type="password" required minlength="8" placeholder="min. 8 characters"></label>
+        <label>Password<input class="field" id="u-password" type="password" required minlength="8" autocomplete="new-password" placeholder="min. 8 characters"></label>
         <div class="form-actions">
           <button class="btn primary" type="submit">＋ Add User</button>
           <span class="form-status" id="user-status"></span>
@@ -590,7 +704,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
       <div class="ret-wrap">
         <input class="ret-input" type="number" id="retention-days" min="1" max="365" value="30">
         <span class="ret-unit">days</span>
-        <button class="btn save" onclick="saveRetention()">Save</button>
+        <button class="btn save" id="btn-save-retention" type="button">Save</button>
         <span class="ret-status" id="ret-status"></span>
       </div>
     </div>
@@ -602,13 +716,16 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
 <footer>TwinGuard-SHA256 &nbsp;|&nbsp; GMI Final Year Project JAN 2026 &nbsp;|&nbsp; SEM 4 DCBS 6</footer>
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 let allLogs = [], allUsers = [], activeTab = null, prevCounts = {};
 
-// ── Session guard: any 401 means the admin session expired ──
+// ── Session guard + CSRF: writes carry the page's token; 401 = session ended ──
+const CSRF   = document.querySelector('meta[name="csrf-token"]').content;
 const _fetch = window.fetch.bind(window);
-window.fetch = async (...args) => {
-  const r = await _fetch(...args);
+window.fetch = async (url, opts = {}) => {
+  const headers = new Headers(opts.headers || {});
+  if ((opts.method || 'GET').toUpperCase() !== 'GET') headers.set('X-CSRF-Token', CSRF);
+  const r = await _fetch(url, {...opts, headers, credentials: 'same-origin'});
   if (r.status === 401) location.href = '/login';
   return r;
 };
@@ -672,9 +789,10 @@ async function saveRetention() {
 }
 
 // ── Data ───────────────────────────────────────
-async function loadData() {
+async function loadData(background = false) {
+  const opts = background ? {headers: {'X-Background': '1'}} : {};
   try {
-    const [sr, lr] = await Promise.all([fetch('/api/stats'), fetch('/api/logs')]);
+    const [sr, lr] = await Promise.all([fetch('/api/stats', opts), fetch('/api/logs', opts)]);
     const stats = await sr.json();
     allLogs     = await lr.json();
     document.getElementById('stat-total').textContent  = stats.total_alerts;
@@ -979,10 +1097,10 @@ async function loadUsers() {
       <td class="ts">${fmtTs(u.created_at)}</td>
       <td class="ts">${fmtTs(u.last_login)}</td>
       <td class="row-actions">
-        <button class="btn sm" data-user="${esc(u.id)}" onclick="openUserLog(this.dataset.user)">📄 View Log</button>
+        <button class="btn sm" type="button" data-action="log" data-id="${esc(u.id)}">📄 View Log</button>
         ${u.enabled
-        ? `<button class="btn sm danger" onclick="setUserStatus('${esc(u.id)}', false)">Disable</button>`
-        : `<button class="btn sm enable" onclick="setUserStatus('${esc(u.id)}', true)">Enable</button>`}</td>
+        ? `<button class="btn sm danger" type="button" data-action="disable" data-id="${esc(u.id)}">Disable</button>`
+        : `<button class="btn sm enable" type="button" data-action="enable" data-id="${esc(u.id)}">Enable</button>`}</td>
     </tr>`).join('');
   } catch(e) {
     tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
@@ -1021,7 +1139,21 @@ async function setUserStatus(id, enabled) {
 loadRetention();
 loadData();
 loadUsers();
-setInterval(loadData, 10000);
+setInterval(() => loadData(true), 10000);
+
+// ── Event wiring (no inline handlers: the Content-Security-Policy forbids them) ──
+document.getElementById('theme-btn').addEventListener('click', toggleTheme);
+document.getElementById('btn-refresh').addEventListener('click', () => loadData());
+document.getElementById('search').addEventListener('input', filterTable);
+document.getElementById('btn-export').addEventListener('click', exportLogs);
+document.getElementById('user-form').addEventListener('submit', addUser);
+document.getElementById('btn-save-retention').addEventListener('click', saveRetention);
+document.getElementById('user-body').addEventListener('click', ev => {
+  const b = ev.target.closest('button[data-action]');
+  if (!b) return;
+  if (b.dataset.action === 'log') openUserLog(b.dataset.id);
+  else setUserStatus(b.dataset.id, b.dataset.action === 'enable');
+});
 setInterval(() => {
   const el = document.getElementById('rfill');
   el.style.animation='none'; el.offsetHeight; el.style.animation='';
@@ -1036,10 +1168,10 @@ LOGIN_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TwinGuard-SHA256 | {{ 'Admin Setup' if mode == 'setup' else 'Admin Login' }}</title>
+<title>TwinGuard-SHA256 | {{ {'setup': 'Admin Setup', '2fa': 'Verification', '2fa_setup': 'Set Up 2FA'}.get(mode, 'Admin Login') }}</title>
 <link rel="icon" type="image/png" href="/static/favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;500;700;900&display=swap" rel="stylesheet">
-<style>
+<style nonce="{{ csp_nonce }}">
 :root{--accent:#4fc3f7;--accent2:#2b8fe0;--cyan:#7ddcff;--danger:#ff5a76;--safe:#3ee6a8;
   --mono:'Share Tech Mono',monospace;--sans:'Exo 2',sans-serif;}
 [data-theme="dark"]{--bg:#0e1c33;--panel:#14284a;--border:#264878;--text:#dcebff;--dim:#86a5cc;--inp:#0f2140;
@@ -1073,9 +1205,18 @@ button{width:100%;margin-top:6px;padding:12px;border:none;border-radius:8px;curs
 button:hover{opacity:.88;}
 .error{font-family:var(--mono);font-size:12px;color:var(--danger);border:1px solid var(--danger);border-radius:6px;
   padding:9px 12px;margin-bottom:16px;background:rgba(255,90,118,.08);}
+.qr{background:#fff;border-radius:10px;padding:10px;width:200px;height:200px;margin:4px auto 14px;}
+.qr svg{width:100%;height:100%;display:block;}
+.secret{font-family:var(--mono);font-size:13px;letter-spacing:2px;text-align:center;color:var(--text);
+  background:var(--inp);border:1px dashed var(--border);border-radius:8px;padding:8px;margin-bottom:16px;overflow-wrap:anywhere;}
+ol.steps{font-size:13px;color:var(--dim);line-height:1.6;margin:0 0 16px 18px;}
+.code-in{font-size:22px;letter-spacing:8px;text-align:center;}
+.linkbtn{background:none;border:none;color:var(--dim);font-family:var(--mono);font-size:11px;cursor:pointer;
+  width:auto;margin:14px auto 0;display:block;padding:4px;}
+.linkbtn:hover{color:var(--accent);opacity:1;}
 .foot{font-family:var(--mono);font-size:10px;color:var(--dim);text-align:center;margin-top:20px;letter-spacing:1px;}
 </style>
-<script>
+<script nonce="{{ csp_nonce }}">
 try { document.documentElement.setAttribute('data-theme', localStorage.getItem('tg-theme') || 'dark'); } catch(e) {}
 </script>
 </head>
@@ -1088,15 +1229,48 @@ try { document.documentElement.setAttribute('data-theme', localStorage.getItem('
   {% if mode == 'setup' %}
     <h1>First-Run Setup</h1>
     {% if locked %}
-      <p class="hint">No admin account exists yet. For security, the admin account can only be created from the machine running the dashboard. Open <b>http://127.0.0.1:5000</b> on that machine.</p>
+      <p class="hint">No admin account exists yet. For security, the admin account can only be created from the machine running the dashboard. Open <b>https://127.0.0.1:5000</b> on that machine.</p>
     {% else %}
       <p class="hint">Create the administrator account for this dashboard. It is stored in Firebase Authentication.</p>
       {% if error %}<div class="error">✗ {{ error }}</div>{% endif %}
       <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label>Admin Email<input name="email" type="email" required maxlength="120" autocomplete="username" autofocus></label>
         <label>Password<input name="password" type="password" required minlength="10" autocomplete="new-password" placeholder="min. 10 characters"></label>
         <label>Confirm Password<input name="confirm" type="password" required minlength="10" autocomplete="new-password"></label>
         <button type="submit">Create Admin Account</button>
+      </form>
+    {% endif %}
+  {% elif mode == '2fa' %}
+    <h1>Two-Factor Verification</h1>
+    <p class="hint">Enter the 6-digit code from your authenticator app for <b>{{ email }}</b>.</p>
+    {% if error %}<div class="error">✗ {{ error }}</div>{% endif %}
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Authentication Code<input class="code-in" name="code" required inputmode="numeric" pattern="[0-9 ]{6,7}"
+        maxlength="7" autocomplete="one-time-code" autofocus></label>
+      <button type="submit">Verify</button>
+    </form>
+    <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="linkbtn" type="submit">← Cancel and sign out</button></form>
+  {% elif mode == '2fa_setup' %}
+    <h1>Set Up Two-Factor Authentication</h1>
+    {% if locked %}
+      <p class="hint">Two-factor setup can only be done on the machine running the dashboard. Open <b>https://127.0.0.1:5000</b> there.</p>
+    {% else %}
+      <ol class="steps">
+        <li>Install an authenticator app on your phone (Google Authenticator, Microsoft Authenticator, Aegis, 2FAS…).</li>
+        <li>Scan this QR code, or type the key below.</li>
+        <li>Enter the 6-digit code it shows.</li>
+      </ol>
+      <div class="qr" role="img" aria-label="Authenticator QR code">{{ qr }}</div>
+      <div class="secret">{{ secret }}</div>
+      {% if error %}<div class="error">✗ {{ error }}</div>{% endif %}
+      <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Code from the app<input class="code-in" name="code" required inputmode="numeric" pattern="[0-9 ]{6,7}"
+          maxlength="7" autocomplete="one-time-code" autofocus></label>
+        <button type="submit">Turn On 2FA &amp; Continue</button>
       </form>
     {% endif %}
   {% else %}
@@ -1104,6 +1278,7 @@ try { document.documentElement.setAttribute('data-theme', localStorage.getItem('
     <p class="hint">Authorized personnel only. Access attempts are logged.</p>
     {% if error %}<div class="error">✗ {{ error }}</div>{% endif %}
     <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>Email<input name="email" type="email" required autocomplete="username" autofocus></label>
       <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
       <button type="submit">Log In</button>
@@ -1124,7 +1299,7 @@ def setup():
     if store.admin_exists():
         return redirect(url_for("login"))
     if request.remote_addr not in LOOPBACK:
-        return render_template_string(LOGIN_HTML, mode="setup", locked=True, error=None), 403
+        return render_template_string(LOGIN_HTML, mode="setup", locked=True), 403
     error = None
     if request.method == "POST":
         email    = request.form.get("email", "").strip()
@@ -1138,22 +1313,20 @@ def setup():
             error = "Passwords do not match"
         else:
             try:
-                store.create_admin(email, password, now_iso())
+                uid = store.create_admin(email, password, now_iso())
             except FirebaseError as e:
                 error = str(e)
             else:
                 print(f"[Auth] Admin account '{email}' created in Firebase.")
-                session.clear()
-                session.permanent = True
-                session["admin"] = email
-                return redirect(url_for("dashboard"))
+                start_pending("enroll", uid, email)
+                return redirect(url_for("two_factor_setup"))
     return render_template_string(LOGIN_HTML, mode="setup", locked=False, error=error)
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if not store.admin_exists():
         return redirect(url_for("setup"))
-    if session.get("admin"):
+    if admin_session_valid():
         return redirect(url_for("dashboard"))
     error = None
     if request.method == "POST":
@@ -1164,37 +1337,124 @@ def login():
             error = "Too many failed attempts. Try again in a few minutes."
         else:
             try:
-                _uid, admin_email = store.sign_in_admin(email, password)
+                uid, admin_email = store.sign_in_admin(email, password)
             except FirebaseError as e:
                 record_failure(key)
-                print(f"[Auth] Failed admin login from {request.remote_addr}.")
+                print(f"[Auth] Failed admin password from {request.remote_addr}.")
                 error = str(e)
             else:
+                if (store.admin_record() or {}).get("totp_secret"):
+                    start_pending("2fa", uid, admin_email)
+                    return redirect(url_for("two_factor"))
+                if request.remote_addr in LOOPBACK:
+                    start_pending("enroll", uid, admin_email)
+                    return redirect(url_for("two_factor_setup"))
+                error = ("Two-factor authentication is not set up yet. Log in once on the dashboard "
+                         "machine itself (https://127.0.0.1:5000) to set it up.")
+    return render_template_string(LOGIN_HTML, mode="login", error=error)
+
+@app.route("/2fa", methods=["GET", "POST"])
+def two_factor():
+    pending = get_pending("2fa")
+    if not pending:
+        session.clear()
+        return redirect(url_for("login"))
+    error = None
+    if request.method == "POST":
+        key = f"admin:{request.remote_addr}"
+        if is_locked(key):
+            error = "Too many failed attempts. Try again in a few minutes."
+        else:
+            secret  = (store.admin_record() or {}).get("totp_secret", "")
+            counter = verify_totp(secret, request.form.get("code"))
+            if counter is not None and store.consume_totp_counter(counter):
                 clear_failures(key)
-                session.clear()
-                session.permanent = True
-                session["admin"] = admin_email
-                print(f"[Auth] Admin '{admin_email}' logged in from {request.remote_addr}.")
+                start_admin_session(pending["uid"], pending["email"])
+                print(f"[Auth] Admin '{pending['email']}' logged in (2FA) from {request.remote_addr}.")
                 return redirect(url_for("dashboard"))
-    return render_template_string(LOGIN_HTML, mode="login", locked=False, error=error)
+            record_failure(key)
+            print(f"[Auth] Failed 2FA code from {request.remote_addr}.")
+            pending["tries"] += 1
+            session["pending"] = pending
+            if pending["tries"] >= MAX_2FA_TRIES:
+                session.clear()
+                return redirect(url_for("login"))
+            error = "Invalid or already-used code"
+    return render_template_string(LOGIN_HTML, mode="2fa", email=pending["email"], error=error)
+
+@app.route("/2fa/setup", methods=["GET", "POST"])
+def two_factor_setup():
+    """Enrol the authenticator app. Only from this machine, right after a verified password."""
+    pending = get_pending("enroll")
+    if not pending:
+        session.clear()
+        return redirect(url_for("login"))
+    if request.remote_addr not in LOOPBACK:
+        return render_template_string(LOGIN_HTML, mode="2fa_setup", locked=True), 403
+    if not pending.get("secret"):
+        pending["secret"] = pyotp.random_base32()
+        session["pending"] = pending
+    secret, error = pending["secret"], None
+    if request.method == "POST":
+        counter = verify_totp(secret, request.form.get("code"))
+        if counter is not None:
+            store.set_admin_totp(secret, counter, now_iso())
+            start_admin_session(pending["uid"], pending["email"])
+            print(f"[Auth] 2FA enabled for admin '{pending['email']}'.")
+            return redirect(url_for("dashboard"))
+        error = "That code didn't match. Check the phone's time is automatic and try the newest code."
+    uri = pyotp.TOTP(secret).provisioning_uri(name=pending["email"], issuer_name="TwinGuard")
+    return render_template_string(LOGIN_HTML, mode="2fa_setup", locked=False, error=error,
+                                  qr=qr_svg(uri), secret=" ".join(secret[i:i + 4] for i in range(0, len(secret), 4)))
 
 @app.route("/logout", methods=["POST"])
 def logout():
     session.clear()
     return redirect(url_for("login"))
 
+def cert_hosts(path):
+    """Host names / IPv4 addresses the certificate is valid for -> TRUSTED_HOSTS."""
+    with open(path, "rb") as f:
+        san = x509.load_pem_x509_certificate(f.read()).extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    return san.get_values_for_type(x509.DNSName) + \
+        [str(ip) for ip in san.get_values_for_type(x509.IPAddress) if isinstance(ip, ipaddress.IPv4Address)]
+
 def main():
     global store
+    sys.stdout.reconfigure(line_buffering=True)   # show log lines immediately in dashboard.log
+    ap = argparse.ArgumentParser(description="TwinGuard-SHA256 admin dashboard (HTTPS)")
+    ap.add_argument("--host", default="0.0.0.0", help="address to listen on (0.0.0.0 = LAN, 127.0.0.1 = this machine only)")
+    ap.add_argument("--port", type=int, default=5000)
+    args = ap.parse_args()
+
+    if not (os.path.exists(SRV_CRT) and os.path.exists(SRV_KEY)):
+        print("\n  [HTTPS] No certificate found. Create one first:\n      python3 dashboard/make_certs.py\n")
+        sys.exit(1)
+    hosts = cert_hosts(SRV_CRT)
+    app.config["TRUSTED_HOSTS"] = hosts      # reject requests addressed to any other host name
     try:
         store = FirebaseStore()
     except FirebaseNotConfigured as e:
         print(f"\n  [Firebase] Not configured: {e}\n  See firebase/README.md for the one-time setup.\n")
         sys.exit(1)
     threading.Thread(target=purge_old_logs, daemon=True).start()
-    print("\n  TwinGuard-SHA256 — Dashboard Server (Firebase)")
-    print("  ───────────────────────────────────────────────")
-    print("  Open: http://127.0.0.1:5000\n")
-    app.run(host="0.0.0.0", port=5000, debug=False)
+
+    adapter = BuiltinSSLAdapter(SRV_CRT, SRV_KEY)
+    adapter.context.minimum_version = ssl.TLSVersion.TLSv1_2
+    server = wsgi.Server((args.host, args.port), app, numthreads=16, server_name="TwinGuard")
+    server.ssl_adapter = adapter
+
+    print("\n  TwinGuard-SHA256 — Dashboard Server (Firebase, HTTPS)")
+    print("  ─────────────────────────────────────────────────────")
+    shown = [h for h in hosts if args.host == "0.0.0.0" or h in ("127.0.0.1", "localhost")]
+    for h in shown:
+        if h[0].isdigit():
+            print(f"  Open: https://{h}:{args.port}")
+    print()
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        server.stop()
 
 if __name__ == "__main__":
     main()

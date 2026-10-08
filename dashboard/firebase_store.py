@@ -187,6 +187,39 @@ class FirebaseStore:
         self._admin_exists = True
         return user.uid
 
+    # ── Admin 2FA (secret lives in config/admin; client rules deny all access) ──
+    def admin_record(self):
+        snap = self.db.collection("config").document("admin").get()
+        return snap.to_dict() if snap.exists else None
+
+    def set_admin_totp(self, secret, counter, enrolled_at):
+        self.db.collection("config").document("admin").update(
+            {"totp_secret": secret, "totp_last_counter": counter, "totp_enrolled_at": enrolled_at})
+
+    def consume_totp_counter(self, counter):
+        """Atomically record a used TOTP time-step. False if it (or a later one) was already used."""
+        ref = self.db.collection("config").document("admin")
+
+        @firestore.transactional
+        def txn(t):
+            last = (ref.get(transaction=t).to_dict() or {}).get("totp_last_counter", -1)
+            if counter <= last:
+                return False
+            t.update(ref, {"totp_last_counter": counter})
+            return True
+
+        return txn(self.db.transaction())
+
+    def admin_account_ok(self, uid, logged_in_at):
+        """Still an enabled admin, and sessions not revoked (e.g. password reset) since login."""
+        try:
+            u = auth.get_user(uid)
+        except auth.UserNotFoundError:
+            return False
+        revoked_after = (u.tokens_valid_after_timestamp or 0) / 1000
+        return (not u.disabled and (u.custom_claims or {}).get("admin") is True
+                and revoked_after <= logged_in_at)
+
     def sign_in_admin(self, email, password):
         """Check credentials with Firebase Auth; returns (uid, email) for admins only."""
         try:
