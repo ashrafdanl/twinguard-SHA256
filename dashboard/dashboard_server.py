@@ -1225,10 +1225,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .card::before{content:'';position:absolute;top:-1px;left:20px;width:80px;height:2px;
   background:linear-gradient(90deg,var(--accent),transparent);}
 .logo{display:flex;align-items:center;gap:12px;margin-bottom:26px;}
-.logo-icon{width:52px;height:52px;flex-shrink:0;background:linear-gradient(135deg,var(--cyan),var(--accent2));
+.logo-icon{width:66px;height:66px;flex-shrink:0;background:linear-gradient(135deg,var(--cyan),var(--accent2));
   -webkit-mask:url(/static/logo.png) center/contain no-repeat;mask:url(/static/logo.png) center/contain no-repeat;}
-.logo-text{font-size:20px;font-weight:900;letter-spacing:2px;}
-.logo-sub{font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:2px;margin-top:2px;}
+.logo-text{font-size:24px;font-weight:900;letter-spacing:1.5px;line-height:1.1;}
+.logo-sub{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:2px;margin-top:4px;}
 h1{font-family:var(--mono);font-size:16px;letter-spacing:3px;color:var(--accent);text-transform:uppercase;margin-bottom:6px;}
 .hint{font-size:16px;color:var(--dim);margin-bottom:20px;line-height:1.5;}
 label{display:flex;flex-direction:column;gap:6px;font-family:var(--mono);font-size:13px;letter-spacing:2px;
@@ -1261,7 +1261,7 @@ try { document.documentElement.setAttribute('data-theme', localStorage.getItem('
 <div class="card">
   <div class="logo">
     <div class="logo-icon" role="img" aria-label="TwinGuard logo"></div>
-    <div><div class="logo-text">TWINGUARD</div><div class="logo-sub">SHA-256 // ROGUE AP DEFENSE</div></div>
+    <div><div class="logo-text">TWINGUARD</div><div class="logo-sub">ROGUE AP DEFENSE</div></div>
   </div>
   {% if mode == 'setup' %}
     <h1>First-Run Setup</h1>
