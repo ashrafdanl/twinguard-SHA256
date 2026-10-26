@@ -1275,9 +1275,9 @@ function download(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 function toCSV(rows, cols) {
-  const cell = v => { v = (v === null || v === undefined) ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const cell = v => { v = (v === null || v === undefined) ? '' : String(v); return /[",\\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   return [cols.map(c => cell(c.label)).join(',')]
-    .concat(rows.map(r => cols.map(c => cell(c.get(r))).join(','))).join('\n');
+    .concat(rows.map(r => cols.map(c => cell(c.get(r))).join(','))).join('\\n');
 }
 function exportLogs() { download('twinguard_forensic_log.json', JSON.stringify(allLogs, null, 2), 'application/json'); }
 function exportLogsCSV() {
