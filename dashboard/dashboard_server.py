@@ -477,16 +477,22 @@ section{margin-bottom:28px;scroll-margin-top:90px;}
 .ret-input{width:72px;padding:8px 10px;border-radius:8px;border:1px solid var(--inp-border);
   background:var(--inp);color:var(--text);font-family:var(--mono);font-size:17px;text-align:center;outline:none;transition:border-color .2s;}
 .ret-input:focus{border-color:var(--accent);}
-.fs-wrap{display:flex;align-items:center;gap:14px;flex:1;min-width:220px;}
-.fs-slider{-webkit-appearance:none;appearance:none;flex:1;max-width:260px;height:6px;border-radius:3px;
-  background:var(--inp);border:1px solid var(--inp-border);outline:none;cursor:pointer;}
-.fs-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:20px;height:20px;border-radius:50%;
-  background:linear-gradient(135deg,var(--cyan),var(--accent2));border:2px solid var(--panel);cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.35);}
-.fs-slider::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:var(--accent2);border:2px solid var(--panel);cursor:pointer;}
-.fs-slider:focus-visible{box-shadow:0 0 0 3px var(--glow);}
-.fs-ticks{display:flex;justify-content:space-between;max-width:260px;flex:1;font-family:var(--mono);font-size:11px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;}
-.fs-ticks span{cursor:pointer;transition:color .15s;}
-.fs-ticks span.on{color:var(--accent);font-weight:700;}
+.fs-wrap{display:flex;align-items:center;gap:16px;flex:1;min-width:240px;}
+.fs-a{font-family:var(--sans);font-weight:700;color:var(--text);line-height:1;cursor:pointer;user-select:none;}
+.fs-a-sm{font-size:15px;} .fs-a-lg{font-size:27px;}
+.fs-track{position:relative;flex:1;max-width:320px;height:28px;display:flex;align-items:center;}
+.fs-line{position:absolute;left:1px;right:1px;top:50%;height:2px;transform:translateY(-1px);background:var(--inp-border);border-radius:1px;pointer-events:none;}
+.fs-tick{position:absolute;top:50%;width:2px;height:9px;transform:translate(-50%,-50%);background:var(--inp-border);border-radius:1px;pointer-events:none;}
+.fs-tick:nth-child(1){left:0;} .fs-tick:nth-child(2){left:50%;} .fs-tick:nth-child(3){left:100%;}
+.fs-tick:nth-child(1),.fs-tick:nth-child(3){height:13px;}
+.fs-slider{position:relative;z-index:2;-webkit-appearance:none;appearance:none;width:100%;height:28px;background:transparent;outline:none;cursor:pointer;margin:0;}
+.fs-slider::-webkit-slider-runnable-track{background:transparent;height:28px;}
+.fs-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:24px;height:24px;margin-top:2px;border-radius:50%;
+  background:#fff;border:1px solid rgba(0,0,0,.18);box-shadow:0 1px 5px rgba(0,0,0,.4);cursor:pointer;}
+.fs-slider::-moz-range-track{background:transparent;height:28px;}
+.fs-slider::-moz-range-thumb{width:24px;height:24px;border-radius:50%;background:#fff;border:1px solid rgba(0,0,0,.18);box-shadow:0 1px 5px rgba(0,0,0,.4);cursor:pointer;}
+.fs-slider:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 3px var(--glow),0 1px 5px rgba(0,0,0,.4);}
+.fs-slider:focus-visible::-moz-range-thumb{box-shadow:0 0 0 3px var(--glow),0 1px 5px rgba(0,0,0,.4);}
 .ret-unit{font-family:var(--mono);font-size:15px;color:var(--dim);}
 .ret-status,.form-status{font-family:var(--mono);font-size:15px;}
 .ok{color:var(--safe);} .err{color:var(--danger);}
@@ -773,7 +779,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
   <section id="settings">
     <div class="sec-head"><div class="sec-title">Settings</div></div>
     <div class="panel retention-panel">
-      <div class="ret-label">🗂 Log Retention</div>
+      <div class="ret-label">Log Retention</div>
       <div class="ret-desc">Logs older than this are automatically deleted every hour.</div>
       <div class="ret-wrap">
         <input class="ret-input" type="number" id="retention-days" min="1" max="365" value="30">
@@ -783,14 +789,19 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
       </div>
     </div>
     <div class="panel retention-panel">
-      <div class="ret-label">🔠 Font Size</div>
+      <div class="ret-label">Font Size</div>
       <div class="ret-desc">Adjust the dashboard text size. Saved on this device.</div>
       <div class="fs-wrap">
-        <input class="fs-slider" type="range" id="font-scale" min="0" max="2" step="1" value="1"
-          aria-label="Font size" aria-valuetext="Medium">
-        <div class="fs-ticks" id="fs-ticks" aria-hidden="true">
-          <span data-fs="0">Small</span><span data-fs="1" class="on">Medium</span><span data-fs="2">Big</span>
+        <span class="fs-a fs-a-sm" data-fs="0" aria-hidden="true">A</span>
+        <div class="fs-track">
+          <div class="fs-line" aria-hidden="true"></div>
+          <div class="fs-tick" aria-hidden="true"></div>
+          <div class="fs-tick" aria-hidden="true"></div>
+          <div class="fs-tick" aria-hidden="true"></div>
+          <input class="fs-slider" type="range" id="font-scale" min="0" max="2" step="1" value="1"
+            aria-label="Font size" aria-valuetext="Medium">
         </div>
+        <span class="fs-a fs-a-lg" data-fs="2" aria-hidden="true">A</span>
       </div>
     </div>
   </section>
@@ -851,7 +862,6 @@ function applyFontScale(idx) {
     slider.value = idx;
     slider.setAttribute('aria-valuetext', ['Small','Medium','Big'][idx]);
   }
-  document.querySelectorAll('#fs-ticks span').forEach(s => s.classList.toggle('on', Number(s.dataset.fs) === idx));
 }
 let savedScale = 1;
 try { const v = localStorage.getItem('tg-fontscale'); if (v !== null) savedScale = Number(v); } catch(e) {}
@@ -1312,7 +1322,7 @@ document.getElementById('cm-confirm').addEventListener('click', confirmDeleteUse
 document.getElementById('confirm-modal').addEventListener('click', e => { if (e.target.id === 'confirm-modal') closeDeleteModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !document.getElementById('confirm-modal').hidden) closeDeleteModal(); });
 document.getElementById('font-scale').addEventListener('input', e => applyFontScale(e.target.value));
-document.querySelectorAll('#fs-ticks span').forEach(s => s.addEventListener('click', () => applyFontScale(s.dataset.fs)));
+document.querySelectorAll('.fs-a[data-fs]').forEach(s => s.addEventListener('click', () => applyFontScale(s.dataset.fs)));
 document.getElementById('user-body').addEventListener('click', ev => {
   const b = ev.target.closest('button[data-action]');
   if (!b) return;
