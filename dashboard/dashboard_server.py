@@ -276,7 +276,7 @@ def get_stats():
         "high":           counts["HIGH"],
         "medium":         counts["MEDIUM"],
         "low":            counts["LOW"],
-        "critical_shown": len(logs),                    # HIGH detections delivered to the dashboard
+        "critical_shown": len(logs),                    # HIGH + MEDIUM detections delivered to the dashboard
         "total_users":    len(users),
         "active_users":   sum(1 for u in users if u.get("enabled")),
         "retention_days": cfg.get("retention_days", 30),
@@ -644,9 +644,9 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
     <div class="sec-head"><div class="sec-title">Threat Overview</div><div class="sec-note">auto-refresh 10s</div></div>
     <div class="stats-grid">
       <div class="stat-card total"><div class="stat-label">Total Detections</div><div class="stat-value" id="stat-total">0</div><div class="stat-sub">all severities, all users</div></div>
-      <div class="stat-card recent"><div class="stat-label">Critical (24h)</div><div class="stat-value" id="stat-24h">0</div><div class="stat-sub">last 24 hours</div></div>
+      <div class="stat-card recent"><div class="stat-label">Alerts (24h)</div><div class="stat-value" id="stat-24h">0</div><div class="stat-sub">last 24 hours</div></div>
       <div class="stat-card integrity" id="card-integrity" title="Share of forensic log entries whose SHA-256 hash still matches their contents. Below 100% means an entry was edited after it was recorded."><div class="stat-label">Log Integrity</div><div class="stat-value" id="stat-integrity">—</div><div class="stat-sub" id="stat-integrity-sub">no entries</div></div>
-      <div class="stat-card high"><div class="stat-label">Critical Alerts</div><div class="stat-value" id="stat-high">0</div><div class="stat-sub">HIGH · sent to dashboard</div></div>
+      <div class="stat-card high"><div class="stat-label">Alerts</div><div class="stat-value" id="stat-high">0</div><div class="stat-sub">HIGH + MEDIUM · all users</div></div>
       <div class="stat-card users"><div class="stat-label">Total Users</div><div class="stat-value" id="stat-users">0</div><div class="stat-sub">registered operators</div></div>
       <div class="stat-card active"><div class="stat-label">Active Users</div><div class="stat-value" id="stat-active">0</div><div class="stat-sub">accounts enabled</div></div>
     </div>
@@ -660,7 +660,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
         </div>
       </div>
       <div class="panel chart-card">
-        <div class="chart-title">Critical Alerts · Last 14 Days (GMT+8) <b id="trend-sum"></b></div>
+        <div class="chart-title">Alerts · Last 14 Days (GMT+8) <b id="trend-sum"></b></div>
         <svg class="svg-chart" id="trend-chart" role="img" aria-label="Daily alerts by severity over the last 14 days"></svg>
         <div class="legend inline" id="trend-legend"></div>
       </div>
@@ -668,18 +668,18 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
 
     <div class="chart-grid even">
       <div class="panel chart-card">
-        <div class="chart-title">Detection Reasons <b>critical alerts per rule</b></div>
+        <div class="chart-title">Detection Reasons <b>alerts per rule</b></div>
         <div class="hbars" id="reason-bars"></div>
       </div>
       <div class="panel chart-card">
-        <div class="chart-title">Most Targeted SSIDs <b>critical · top 6</b></div>
+        <div class="chart-title">Most Targeted SSIDs <b>alerts · top 6</b></div>
         <div class="hbars" id="ssid-bars"></div>
       </div>
     </div>
   </section>
 
   <section id="threats">
-    <div class="sec-head"><div class="sec-title">Threat Log</div><div class="sec-note">HIGH severity only · one log per user · SHA-256 sealed</div></div>
+    <div class="sec-head"><div class="sec-title">Threat Log</div><div class="sec-note">HIGH + MEDIUM severity · one log per user · SHA-256 sealed</div></div>
     <div class="refresh-bar"><div class="refresh-fill" id="rfill"></div></div>
     <div class="controls">
       <button class="btn primary" id="btn-refresh" type="button">↻ Refresh</button>
@@ -826,7 +826,7 @@ async function loadData(background = false) {
     const stats = await sr.json();
     allLogs     = await lr.json();
     document.getElementById('stat-total').textContent  = stats.total_alerts;
-    document.getElementById('stat-high').textContent   = stats.high;
+    document.getElementById('stat-high').textContent   = stats.high + stats.medium;
     document.getElementById('stat-users').textContent  = stats.total_users;
     document.getElementById('stat-active').textContent = stats.active_users;
     renderThreatLog();
@@ -837,7 +837,7 @@ async function loadData(background = false) {
   }
 }
 
-function renderTable(logs, highlight=false, emptyMsg='No high-severity alerts.') {
+function renderTable(logs, highlight=false, emptyMsg='No alerts.') {
   const tbody = document.getElementById('log-body');
   if (!logs.length) {
     tbody.innerHTML = `<tr><td colspan="8" class="empty-state"><div class="icon">✅</div>${esc(emptyMsg)}</td></tr>`;
@@ -871,7 +871,7 @@ const ownerKey = l => String(l.uid || '');
 
 function renderThreatLog() {
   const groups = {};
-  allLogs.filter(l => l.severity === 'HIGH').forEach(l => (groups[ownerKey(l)] ||= []).push(l));
+  allLogs.filter(l => ['HIGH','MEDIUM'].includes(l.severity)).forEach(l => (groups[ownerKey(l)] ||= []).push(l));
 
   const tabs = allUsers.map(u => ({key: u.id, label: u.username, enabled: u.enabled}));
   const bar = document.getElementById('user-tabs'), owner = document.getElementById('log-owner');
@@ -897,7 +897,7 @@ function renderThreatLog() {
   const current = tabs.find(t => t.key === activeTab);
   const mine    = groups[activeTab] || [];
   owner.replaceChildren(document.createTextNode('Viewing log of '), htmlEl('b', '', current.label),
-    document.createTextNode(` · ${mine.length} high-severity alert${mine.length === 1 ? '' : 's'}` +
+    document.createTextNode(` · ${mine.length} alert${mine.length === 1 ? '' : 's'}` +
       (current.enabled ? '' : ' · account disabled')));
 
   const q = document.getElementById('search').value.toLowerCase();
@@ -905,7 +905,7 @@ function renderThreatLog() {
   const highlight = prevCounts[activeTab] !== undefined && mine.length > prevCounts[activeTab];
   prevCounts = Object.fromEntries(tabs.map(t => [t.key, (groups[t.key] || []).length]));
   renderTable(rows.slice().reverse(), highlight,
-    q ? 'No matching alerts.' : `No high-severity alerts for ${current.label}.`);
+    q ? 'No matching alerts.' : `No alerts for ${current.label}.`);
 }
 
 function filterTable() { renderThreatLog(); }
@@ -971,7 +971,7 @@ function bindTip(el, title, rows) {
 
 function renderDonut(stats) {
   const svg = document.getElementById('sev-donut'), legend = document.getElementById('sev-legend');
-  const counts = SEV.map(s => Number(stats[s.key.toLowerCase()]) || 0);   // all detections, not just critical
+  const counts = SEV.map(s => Number(stats[s.key.toLowerCase()]) || 0);   // all detections, not just the listed alerts
   const total  = counts.reduce((a, b) => a + b, 0);
   const R = 80, C = 2 * Math.PI * R, GAP = 3, nonZero = counts.filter(Boolean).length;
   svg.replaceChildren(svgEl('circle', {cx:100, cy:100, r:R, class:'ring'}));

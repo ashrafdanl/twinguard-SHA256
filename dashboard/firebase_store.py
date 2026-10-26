@@ -15,9 +15,9 @@ Firestore layout:
 There is exactly one dashboard admin (the super admin, created on first run).
 Everyone else is an application user managed from the dashboard.
 
-The dashboard receives only CRITICAL (severity HIGH) detections: it keeps a live
-in-memory copy of them through a collection-group listener, plus severity counts of
-all detections (cheap count queries, refreshed every minute) for the charts.
+The dashboard receives only alert detections (severity HIGH or MEDIUM): it keeps a
+live in-memory copy of them through a collection-group listener, plus severity counts
+of all detections (cheap count queries, refreshed every minute) for the charts.
 """
 
 import json, os, threading, time
@@ -30,6 +30,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE = os.path.join(BASE_DIR, "firebase_config.json")
 SIGN_IN_URL = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
+ALERT_SEVERITIES = ["HIGH", "MEDIUM"]    # what the dashboard lists as alerts
 
 
 class FirebaseNotConfigured(RuntimeError):
@@ -78,7 +79,7 @@ class FirebaseStore:
         threading.Thread(target=self._watchdog, daemon=True).start()
 
     def _ensure_critical_watch(self):
-        """(Re)subscribe to critical detections from every operator's space. The query
+        """(Re)subscribe to alert detections from every operator's space. The query
         needs a collection-group index; until it exists the stream stops, so retry."""
         if self._critical_watch is not None and self._critical_watch.is_active:
             return True
@@ -86,7 +87,7 @@ class FirebaseStore:
             self._critical_watch.close()
         try:
             list(self.db.collection_group("detections")
-                 .where(filter=FieldFilter("severity", "==", "HIGH")).limit(1).stream())
+                 .where(filter=FieldFilter("severity", "in", ALERT_SEVERITIES)).limit(1).stream())
         except Exception as e:
             if not getattr(self, "_index_warned", False):
                 print(f"[Firebase] Waiting for the 'detections' index (see firebase/README.md): {str(e)[:120]}")
@@ -96,9 +97,9 @@ class FirebaseStore:
         with self._lock:
             self._alerts.clear()
         self._critical_watch = (self.db.collection_group("detections")
-                                .where(filter=FieldFilter("severity", "==", "HIGH")).on_snapshot(self._on_alerts))
+                                .where(filter=FieldFilter("severity", "in", ALERT_SEVERITIES)).on_snapshot(self._on_alerts))
         if getattr(self, "_index_warned", False):
-            print("[Firebase] ✓ 'detections' index ready: critical alerts are live.")
+            print("[Firebase] ✓ 'detections' index ready: alerts are live.")
             self._index_warned = False
         return True
 
@@ -129,7 +130,7 @@ class FirebaseStore:
 
     # ── Detections ───────────────────────────────────────────────────────────
     def alerts(self):
-        """Critical (HIGH) detections from all operators, oldest first."""
+        """Alert (HIGH and MEDIUM) detections from all operators, oldest first."""
         with self._lock:
             entries = [dict(a) for a in self._alerts.values()]
         return sorted(entries, key=lambda a: str(a.get("timestamp", "")))
@@ -143,8 +144,10 @@ class FirebaseStore:
                 counts = {sev: int(group.where(filter=FieldFilter("severity", "==", sev)).count().get()[0][0].value)
                           for sev in ("HIGH", "MEDIUM", "LOW")}
             except Exception as e:     # index not serving yet: show what we have instead of failing
-                print(f"[Firebase] Severity counts unavailable, using critical alerts only: {str(e)[:120]}")
-                counts = {"HIGH": len(self.alerts()), "MEDIUM": 0, "LOW": 0}
+                print(f"[Firebase] Severity counts unavailable, using alerts only: {str(e)[:120]}")
+                shown = self.alerts()
+                counts = {sev: sum(1 for a in shown if a.get("severity") == sev) for sev in ("HIGH", "MEDIUM")}
+                counts["LOW"] = 0
                 self._counts = (time.time() - max_age + 10, counts)   # retry in ~10 s
                 return dict(counts)
             self._counts = (time.time(), counts)
