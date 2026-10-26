@@ -404,6 +404,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .theme-toggle .knob svg{width:15px;height:15px;}
 .theme-toggle .ic-sun{display:block;}
 .theme-toggle .ic-moon{display:none;}
+[data-theme="light"] .theme-toggle{background:linear-gradient(145deg,#e4edf9,#c4d5ec);box-shadow:inset 0 1px 3px rgba(120,140,170,.45);}
+[data-theme="light"] .theme-toggle .knob{color:#1766b0;background:radial-gradient(circle at 35% 30%,#ffffff,#eaf3ff 60%,#cfe3f8);box-shadow:0 2px 5px rgba(60,90,130,.35);}
 [data-theme="dark"] .theme-toggle{box-shadow:inset 0 1px 3px rgba(0,0,0,.55),0 0 16px rgba(52,205,224,.3);}
 [data-theme="dark"] .theme-toggle .knob{transform:translateX(32px);
   background:radial-gradient(circle at 35% 30%,#ecf9ff,#a6e6ff 55%,#4ac2d8);
