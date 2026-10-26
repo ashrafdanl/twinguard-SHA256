@@ -483,8 +483,15 @@ section{margin-bottom:28px;scroll-margin-top:90px;}
 .fs-track{position:relative;flex:1;max-width:320px;height:28px;display:flex;align-items:center;}
 .fs-line{position:absolute;left:1px;right:1px;top:50%;height:2px;transform:translateY(-1px);background:var(--inp-border);border-radius:1px;pointer-events:none;}
 .fs-tick{position:absolute;top:50%;width:2px;height:9px;transform:translate(-50%,-50%);background:var(--inp-border);border-radius:1px;pointer-events:none;}
-.fs-tick:nth-child(1){left:0;} .fs-tick:nth-child(2){left:50%;} .fs-tick:nth-child(3){left:100%;}
-.fs-tick:nth-child(1),.fs-tick:nth-child(3){height:13px;}
+.fs-ticks{position:absolute;left:0;right:0;top:0;bottom:0;pointer-events:none;}
+.fs-ticks .fs-tick:nth-child(1){left:0;}
+.fs-ticks .fs-tick:nth-child(2){left:16.667%;}
+.fs-ticks .fs-tick:nth-child(3){left:33.333%;}
+.fs-ticks .fs-tick:nth-child(4){left:50%;}
+.fs-ticks .fs-tick:nth-child(5){left:66.667%;}
+.fs-ticks .fs-tick:nth-child(6){left:83.333%;}
+.fs-ticks .fs-tick:nth-child(7){left:100%;}
+.fs-ticks .fs-tick:first-child,.fs-ticks .fs-tick:last-child{height:13px;}
 .fs-slider{position:relative;z-index:2;-webkit-appearance:none;appearance:none;width:100%;height:28px;background:transparent;outline:none;cursor:pointer;margin:0;}
 .fs-slider::-webkit-slider-runnable-track{background:transparent;height:28px;}
 .fs-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:24px;height:24px;margin-top:2px;border-radius:50%;
@@ -493,6 +500,9 @@ section{margin-bottom:28px;scroll-margin-top:90px;}
 .fs-slider::-moz-range-thumb{width:24px;height:24px;border-radius:50%;background:#fff;border:1px solid rgba(0,0,0,.18);box-shadow:0 1px 5px rgba(0,0,0,.4);cursor:pointer;}
 .fs-slider:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 3px var(--glow),0 1px 5px rgba(0,0,0,.4);}
 .fs-slider:focus-visible::-moz-range-thumb{box-shadow:0 0 0 3px var(--glow),0 1px 5px rgba(0,0,0,.4);}
+.fs-reset{padding:5px 8px;flex:none;display:inline-flex;align-items:center;justify-content:center;}
+.fs-reset svg{width:15px;height:15px;display:block;}
+.fs-reset:hover{border-color:var(--accent);color:var(--accent);}
 .ret-unit{font-family:var(--mono);font-size:15px;color:var(--dim);}
 .ret-status,.form-status{font-family:var(--mono);font-size:15px;}
 .ok{color:var(--safe);} .err{color:var(--danger);}
@@ -620,6 +630,9 @@ tr.new-row td{animation:flashRow .8s ease;}
 tr.disabled td{opacity:.6;} tr.disabled td:nth-child(4),tr.disabled td:last-child{opacity:1;}
 .row-actions{white-space:nowrap;} .row-actions .btn+.btn{margin-left:6px;}
 .btn.icon-btn{padding:5px 9px;font-size:15px;line-height:1;}
+.btn.trash-btn{display:inline-flex;align-items:center;justify-content:center;border-color:color-mix(in srgb,var(--danger) 45%,transparent);}
+.btn.trash-btn:hover{border-color:var(--danger);background:color-mix(in srgb,var(--danger) 12%,transparent);}
+.btn.trash-btn img{width:16px;height:16px;display:block;}
 .status-cell{display:flex;align-items:center;gap:10px;}
 .tswitch{position:relative;flex:none;width:52px;height:30px;padding:0;border-radius:15px;border:1px solid #c9ccd1;
   background:#e2e4e8;cursor:pointer;transition:background .25s,border-color .25s;}
@@ -795,13 +808,14 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
         <span class="fs-a fs-a-sm" data-fs="0" aria-hidden="true">A</span>
         <div class="fs-track">
           <div class="fs-line" aria-hidden="true"></div>
-          <div class="fs-tick" aria-hidden="true"></div>
-          <div class="fs-tick" aria-hidden="true"></div>
-          <div class="fs-tick" aria-hidden="true"></div>
-          <input class="fs-slider" type="range" id="font-scale" min="0" max="2" step="1" value="1"
-            aria-label="Font size" aria-valuetext="Medium">
+          <div class="fs-ticks" aria-hidden="true">
+            <div class="fs-tick"></div><div class="fs-tick"></div><div class="fs-tick"></div><div class="fs-tick"></div><div class="fs-tick"></div><div class="fs-tick"></div><div class="fs-tick"></div>
+          </div>
+          <input class="fs-slider" type="range" id="font-scale" min="0" max="6" step="1" value="2"
+            aria-label="Font size" aria-valuetext="100%">
         </div>
-        <span class="fs-a fs-a-lg" data-fs="2" aria-hidden="true">A</span>
+        <span class="fs-a fs-a-lg" data-fs="6" aria-hidden="true">A</span>
+        <button class="btn icon-btn fs-reset" type="button" id="font-reset" title="Reset to default size" aria-label="Reset font size to default"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5v14l-8.5-7L12 5z"></path><path d="M21 5v14l-8.5-7L21 5z"></path></svg></button>
       </div>
     </div>
   </section>
@@ -851,21 +865,22 @@ function toggleTheme() {
 }
 applyTheme(localStorage.getItem('tg-theme') || 'dark');
 
-// ── Font size (per-device): Small / Medium / Big, default Medium ──
-const FONT_SCALES = [0.9, 1, 1.12];   // index 0..2 -> Small / Medium / Big
-function applyFontScale(idx) {
-  idx = Math.min(2, Math.max(0, Number(idx) || 0));
+// ── Font size (per-device): 7 steps, default 100%. Applied on release so the ──
+//    page doesn't reflow out from under the slider while you drag it. ──────────
+const FONT_SCALES  = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4];
+const FONT_DEFAULT = 2;            // index of 1.0
+const FONT_KEY     = 'tg-fontscale2';
+const clampFs = i => { i = Math.round(Number(i)); return i >= 0 ? Math.min(FONT_SCALES.length - 1, i) : FONT_DEFAULT; };
+function applyFontScale(idx, persist) {
+  idx = clampFs(idx);
   document.documentElement.style.zoom = FONT_SCALES[idx];
-  try { localStorage.setItem('tg-fontscale', idx); } catch(e) {}
   const slider = document.getElementById('font-scale');
-  if (slider) {
-    slider.value = idx;
-    slider.setAttribute('aria-valuetext', ['Small','Medium','Big'][idx]);
-  }
+  if (slider) { slider.value = idx; slider.setAttribute('aria-valuetext', Math.round(FONT_SCALES[idx] * 100) + '%'); }
+  if (persist) { try { localStorage.setItem(FONT_KEY, idx); } catch(e) {} }
 }
-let savedScale = 1;
-try { const v = localStorage.getItem('tg-fontscale'); if (v !== null) savedScale = Number(v); } catch(e) {}
-applyFontScale(savedScale);
+let savedScale = FONT_DEFAULT;
+try { const v = localStorage.getItem(FONT_KEY); if (v !== null && v !== '') savedScale = Number(v); } catch(e) {}
+applyFontScale(savedScale, false);
 
 // ── Sidebar nav + clock ────────────────────────
 const navLinks = document.querySelectorAll('#nav a');
@@ -1229,7 +1244,7 @@ async function loadUsers() {
       <td class="ts">${fmtTs(u.last_login)}</td>
       <td class="row-actions">
         <button class="btn sm" type="button" data-action="log" data-id="${esc(u.id)}">📄 View Log</button>
-        <button class="btn sm danger icon-btn" type="button" data-action="delete" data-id="${esc(u.id)}" data-name="${esc(u.username)}" title="Delete user" aria-label="Delete ${esc(u.username)}">🗑</button></td>
+        <button class="btn sm icon-btn trash-btn" type="button" data-action="delete" data-id="${esc(u.id)}" data-name="${esc(u.username)}" title="Delete user" aria-label="Delete ${esc(u.username)}"><img src="/static/trash.png" alt=""></button></td>
     </tr>`).join('');
   } catch(e) {
     tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
@@ -1321,8 +1336,11 @@ document.getElementById('cm-cancel').addEventListener('click', closeDeleteModal)
 document.getElementById('cm-confirm').addEventListener('click', confirmDeleteUser);
 document.getElementById('confirm-modal').addEventListener('click', e => { if (e.target.id === 'confirm-modal') closeDeleteModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !document.getElementById('confirm-modal').hidden) closeDeleteModal(); });
-document.getElementById('font-scale').addEventListener('input', e => applyFontScale(e.target.value));
-document.querySelectorAll('.fs-a[data-fs]').forEach(s => s.addEventListener('click', () => applyFontScale(s.dataset.fs)));
+document.getElementById('font-scale').addEventListener('input', e =>   // live label only; no zoom until release
+  e.target.setAttribute('aria-valuetext', Math.round(FONT_SCALES[clampFs(e.target.value)] * 100) + '%'));
+document.getElementById('font-scale').addEventListener('change', e => applyFontScale(e.target.value, true));
+document.getElementById('font-reset').addEventListener('click', () => applyFontScale(FONT_DEFAULT, true));
+document.querySelectorAll('.fs-a[data-fs]').forEach(s => s.addEventListener('click', () => applyFontScale(s.dataset.fs, true)));
 document.getElementById('user-body').addEventListener('click', ev => {
   const b = ev.target.closest('button[data-action]');
   if (!b) return;
