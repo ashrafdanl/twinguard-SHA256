@@ -59,7 +59,7 @@ store = None  # FirebaseStore, created in main()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 def load_config():
-    defaults = {"retention_days": 30}
+    defaults = {"retention_days": 30, "scan_retention_days": 30}
     if not os.path.exists(CFG_FILE):
         return defaults
     try:
@@ -245,13 +245,22 @@ def firebase_error(e):
 def purge_old_logs():
     while True:
         try:
-            days   = int(load_config().get("retention_days", 30))
+            cfg    = load_config()
+            days   = int(cfg.get("retention_days", 30))
             cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
             removed = store.purge_alerts_before(cutoff)
             if removed > 0:
                 print(f"[Retention] Purged {removed} alert(s) older than {days} day(s).")
         except Exception as ex:
-            print(f"[Retention] Error: {ex}")
+            print(f"[Retention] Error (alerts): {ex}")
+        try:
+            sdays   = int(cfg.get("scan_retention_days", 30))
+            scutoff = (datetime.now(timezone.utc) - timedelta(days=sdays)).isoformat().replace("+00:00", "Z")
+            sremoved = store.purge_scans_before(scutoff)
+            if sremoved > 0:
+                print(f"[Retention] Purged {sremoved} scan(s) older than {sdays} day(s).")
+        except Exception as ex:
+            print(f"[Retention] Error (scans): {ex}")
         time.sleep(3600)
 
 # ── API ───────────────────────────────────────────────────────────────────────
@@ -307,18 +316,24 @@ def get_retention():
 
 @app.route("/api/retention", methods=["POST"])
 def set_retention():
-    data = request.get_json(force=True)
-    try:
-        days = int(data.get("retention_days", 30))
-    except (ValueError, TypeError):
-        return jsonify({"error": "Invalid value"}), 400
-    if days < 1:
-        return jsonify({"error": "Must be >= 1"}), 400
-    cfg = load_config()
-    cfg["retention_days"] = days
+    data = request.get_json(force=True) or {}
+    cfg, out = load_config(), {}
+    for key in ("retention_days", "scan_retention_days"):
+        if key not in data:
+            continue
+        try:
+            days = int(data[key])
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid value"}), 400
+        if days < 1 or days > 3650:
+            return jsonify({"error": "Must be between 1 and 3650"}), 400
+        cfg[key] = days
+        out[key] = days
+    if not out:
+        return jsonify({"error": "Nothing to update"}), 400
     save_config(cfg)
-    print(f"[Config] Retention set to {days} day(s).")
-    return jsonify({"status": "ok", "retention_days": days})
+    print(f"[Config] Retention updated: {out}")
+    return jsonify({"status": "ok", **out})
 
 @app.route("/api/verify/<sha256_hash>", methods=["GET"])
 def verify_entry(sha256_hash):
@@ -370,6 +385,57 @@ def delete_user(user_id):
         return jsonify({"error": "User not found"}), 404
     print(f"[Users] Deleted user '{username}' and all their data.")
     return jsonify({"id": user_id, "deleted": True})
+
+
+# ── Admin account (self-service from Settings) ───────────────────────────────
+def _reauth_admin(current_password):
+    """Re-verify the signed-in admin's own password. Returns (uid, email) or
+    raises FirebaseError (wrong password, etc.)."""
+    email, uid = session.get("admin"), session.get("admin_uid")
+    if not email or not uid:
+        raise FirebaseError("Not signed in")
+    vuid, _ = store.sign_in_admin(email, current_password or "")
+    if vuid != uid:
+        raise FirebaseError("Password check failed")
+    return uid, email
+
+@app.route("/api/admin/account", methods=["GET"])
+def admin_account():
+    return jsonify({"email": session.get("admin", "")})
+
+@app.route("/api/admin/password", methods=["POST"])
+def admin_change_password():
+    data = request.get_json(force=True) or {}
+    new = str(data.get("new_password", ""))
+    if len(new) < 8:
+        return jsonify({"error": "New password must be at least 8 characters"}), 400
+    uid, _ = _reauth_admin(data.get("current_password"))
+    store.update_admin_password(uid, new)
+    print("[Auth] Admin password changed from Settings.")
+    return jsonify({"status": "ok"})
+
+@app.route("/api/admin/email", methods=["POST"])
+def admin_change_email():
+    data = request.get_json(force=True) or {}
+    new_email = str(data.get("new_email", "")).strip()
+    if not EMAIL_RE.match(new_email):
+        return jsonify({"error": "Enter a valid email address"}), 400
+    uid, old = _reauth_admin(data.get("current_password"))
+    if new_email == old:
+        return jsonify({"error": "That is already your email"}), 400
+    store.update_admin_email(uid, new_email)
+    session["admin"] = new_email        # keep the live session; show the new email
+    print(f"[Auth] Admin email changed from '{old}' to '{new_email}'.")
+    return jsonify({"status": "ok", "email": new_email})
+
+@app.route("/api/admin/2fa/reset", methods=["POST"])
+def admin_reset_2fa():
+    """Re-verify the password, then hand off to the existing 2FA enrolment page."""
+    data = request.get_json(force=True) or {}
+    uid, email = _reauth_admin(data.get("current_password"))
+    start_pending("enroll", uid, email)   # clears the session; enrolment page takes over
+    print(f"[Auth] Admin '{email}' started 2FA re-enrolment from Settings.")
+    return jsonify({"status": "ok", "redirect": url_for("two_factor_setup")})
 
 
 # ── Dashboard HTML ────────────────────────────────────────────────────────────
@@ -534,6 +600,20 @@ section{margin-bottom:28px;scroll-margin-top:90px;}
 .ret-unit{font-family:var(--mono);font-size:15px;color:var(--dim);}
 .ret-status,.form-status{font-family:var(--mono);font-size:15px;}
 .ok{color:var(--safe);} .err{color:var(--danger);}
+.ret-select{padding:8px 12px;border-radius:8px;border:1px solid var(--inp-border);background:var(--inp);
+  color:var(--text);font-family:var(--mono);font-size:16px;outline:none;cursor:pointer;transition:border-color .2s;min-width:120px;}
+.ret-select:focus{border-color:var(--accent);}
+.export-wrap{flex-wrap:wrap;}
+/* Admin account */
+.acct-panel{flex-direction:column;align-items:stretch;}
+.acct-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;width:100%;}
+.acct-card{display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid var(--border);border-radius:10px;background:var(--panel2);}
+.acct-title{font-family:var(--mono);font-size:14px;letter-spacing:2px;color:var(--accent);text-transform:uppercase;}
+.acct-card label{display:flex;flex-direction:column;gap:6px;font-family:var(--mono);font-size:12px;letter-spacing:1.5px;
+  color:var(--dim);text-transform:uppercase;}
+.acct-card .field{width:100%;min-width:0;}
+.acct-note{font-size:14px;color:var(--dim);line-height:1.5;}
+.acct-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:auto;}
 
 .refresh-bar{height:2px;background:var(--border);margin-bottom:16px;border-radius:2px;overflow:hidden;}
 .refresh-fill{height:100%;background:linear-gradient(90deg,var(--accent2),var(--cyan));animation:refill 10s linear infinite;transform-origin:left;}
@@ -749,7 +829,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
   </nav>
   <div class="side-foot">
     <button class="theme-toggle" id="theme-btn" type="button" role="switch" aria-checked="true" aria-label="Switch to light mode" title="Dark mode — click for light"><span class="knob"><svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"></circle><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"></path></svg><svg class="ic-moon" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg></span></button>
-    <div class="sys-line">SIGNED IN: {{ admin }}<br>ROLE: SUPER ADMIN</div>
+    <div class="sys-line">SIGNED IN: <span id="signed-in-email">{{ admin }}</span><br>ROLE: SUPER ADMIN</div>
     <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm danger logout" type="submit">⏻ Log Out</button></form>
   </div>
 </aside>
@@ -880,10 +960,33 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
       <div class="ret-label">Log Retention</div>
       <div class="ret-desc">Logs older than this are automatically deleted every hour.</div>
       <div class="ret-wrap">
-        <input class="ret-input" type="number" id="retention-days" min="1" max="365" value="30">
+        <input class="ret-input" type="number" id="retention-days" min="1" max="3650" value="30">
         <span class="ret-unit">days</span>
         <button class="btn save" id="btn-save-retention" type="button">Save</button>
         <span class="ret-status" id="ret-status"></span>
+      </div>
+    </div>
+    <div class="panel retention-panel">
+      <div class="ret-label">Scan Retention</div>
+      <div class="ret-desc">Scan sweeps older than this are automatically deleted every hour.</div>
+      <div class="ret-wrap">
+        <input class="ret-input" type="number" id="scan-retention-days" min="1" max="3650" value="30">
+        <span class="ret-unit">days</span>
+        <button class="btn save" id="btn-save-scan-retention" type="button">Save</button>
+        <span class="ret-status" id="scan-ret-status"></span>
+      </div>
+    </div>
+    <div class="panel retention-panel">
+      <div class="ret-label">Auto Refresh</div>
+      <div class="ret-desc">How often the dashboard pulls new data. Saved on this device.</div>
+      <div class="ret-wrap">
+        <select class="ret-select" id="refresh-interval" aria-label="Auto refresh interval">
+          <option value="0">Off</option>
+          <option value="5">Every 5s</option>
+          <option value="10">Every 10s</option>
+          <option value="30">Every 30s</option>
+          <option value="60">Every 60s</option>
+        </select>
       </div>
     </div>
     <div class="panel retention-panel">
@@ -901,6 +1004,51 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
         </div>
         <span class="fs-a fs-a-lg" data-fs="6" aria-hidden="true">A</span>
         <button class="fs-reset" type="button" id="font-reset" title="Reset to default size" aria-label="Reset font size to default"><span class="fs-reset-ic" aria-hidden="true"></span></button>
+      </div>
+    </div>
+    <div class="panel retention-panel">
+      <div class="ret-label">Scans Per Page</div>
+      <div class="ret-desc">Rows shown per page in the Scans table. Saved on this device.</div>
+      <div class="ret-wrap">
+        <select class="ret-select" id="scan-pp" aria-label="Scans per page">
+          <option value="10">10</option>
+          <option value="12">12</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+        </select>
+      </div>
+    </div>
+    <div class="panel retention-panel">
+      <div class="ret-label">Export Data</div>
+      <div class="ret-desc">Download the forensic log or the scan sweeps.</div>
+      <div class="ret-wrap export-wrap">
+        <button class="btn" id="exp-log-json" type="button">⬇ Log JSON</button>
+        <button class="btn" id="exp-log-csv" type="button">⬇ Log CSV</button>
+        <button class="btn" id="exp-scan-json" type="button">⬇ Scans JSON</button>
+        <button class="btn" id="exp-scan-csv" type="button">⬇ Scans CSV</button>
+      </div>
+    </div>
+    <div class="panel acct-panel">
+      <div class="ret-label">Admin Account</div>
+      <div class="acct-grid">
+        <form class="acct-card" id="email-form">
+          <div class="acct-title">Change Email</div>
+          <label>New email<input class="field" id="acc-email" type="email" maxlength="120" value="{{ admin }}" autocomplete="username"></label>
+          <label>Current password<input class="field" id="acc-email-pw" type="password" autocomplete="current-password" placeholder="Confirm it's you"></label>
+          <div class="acct-foot"><button class="btn primary" type="submit">Update Email</button><span class="form-status" id="acc-email-status"></span></div>
+        </form>
+        <form class="acct-card" id="password-form">
+          <div class="acct-title">Change Password</div>
+          <label>New password<input class="field" id="acc-newpw" type="password" minlength="8" autocomplete="new-password" placeholder="min. 8 characters"></label>
+          <label>Current password<input class="field" id="acc-pw-cur" type="password" autocomplete="current-password" placeholder="Confirm it's you"></label>
+          <div class="acct-foot"><button class="btn primary" type="submit">Update Password</button><span class="form-status" id="acc-pw-status"></span></div>
+        </form>
+        <form class="acct-card" id="tfa-form">
+          <div class="acct-title">Two-Factor Auth</div>
+          <div class="acct-note">Re-enroll your authenticator app with a fresh secret. You'll be taken to the QR setup page.</div>
+          <label>Current password<input class="field" id="acc-2fa-pw" type="password" autocomplete="current-password" placeholder="Confirm it's you"></label>
+          <div class="acct-foot"><button class="btn" type="submit">Reset 2FA</button><span class="form-status" id="acc-2fa-status"></span></div>
+        </form>
       </div>
     </div>
   </section>
@@ -992,25 +1140,26 @@ function fmtTs(v) { const k = toKL(v); return k ? k.replace('T',' ').substring(0
 // ── Retention ──────────────────────────────────
 async function loadRetention() {
   try {
-    const r = await fetch('/api/retention');
-    const d = await r.json();
+    const d = await (await fetch('/api/retention')).json();
     document.getElementById('retention-days').value = d.retention_days || 30;
+    const s = document.getElementById('scan-retention-days');
+    if (s) s.value = d.scan_retention_days || 30;
   } catch(e) {}
 }
-async function saveRetention() {
-  const days = parseInt(document.getElementById('retention-days').value);
-  const s = document.getElementById('ret-status');
+async function saveRetentionField(inputId, key, statusId) {
+  const days = parseInt(document.getElementById(inputId).value);
+  const s = document.getElementById(statusId);
   if (isNaN(days) || days < 1) { s.textContent='✗ Invalid'; s.className='ret-status err'; return; }
   try {
     const r = await fetch('/api/retention', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({retention_days: days})
+      body: JSON.stringify({[key]: days})
     });
     const d = await r.json();
     if (d.status === 'ok') {
       s.textContent = `✓ Saved (${days} days)`; s.className = 'ret-status ok';
       setTimeout(() => { s.textContent = ''; }, 3000);
-    }
+    } else { s.textContent = '✗ ' + (d.error || 'Failed'); s.className = 'ret-status err'; }
   } catch(e) { s.textContent='✗ Failed'; s.className='ret-status err'; }
 }
 
@@ -1117,10 +1266,42 @@ function openUserLog(key) {
   document.getElementById('threats').scrollIntoView();
 }
 
-function exportLogs() {
+function download(name, text, type) {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([JSON.stringify(allLogs,null,2)],{type:'application/json'}));
-  a.download = 'twinguard_forensic_log.json'; a.click();
+  a.href = URL.createObjectURL(new Blob([text], {type}));
+  a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function toCSV(rows, cols) {
+  const cell = v => { v = (v === null || v === undefined) ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  return [cols.map(c => cell(c.label)).join(',')]
+    .concat(rows.map(r => cols.map(c => cell(c.get(r))).join(','))).join('\n');
+}
+function exportLogs() { download('twinguard_forensic_log.json', JSON.stringify(allLogs, null, 2), 'application/json'); }
+function exportLogsCSV() {
+  const cols = [
+    {label:'timestamp', get:r=>r.timestamp}, {label:'severity', get:r=>r.severity},
+    {label:'ssid', get:r=>r.ssid}, {label:'bssid', get:r=>r.bssid},
+    {label:'signal_dbm', get:r=>r.signal_dbm}, {label:'encryption', get:r=>r.encryption},
+    {label:'reasons', get:r=>Array.isArray(r.reasons)?r.reasons.join(' | '):''},
+    {label:'integrity_ok', get:r=>r.integrity_ok}, {label:'sha256_hash', get:r=>r.sha256_hash},
+  ];
+  download('twinguard_forensic_log.csv', toCSV(allLogs, cols), 'text/csv');
+}
+async function scansForExport() {
+  if (allScans.length) return allScans;
+  try { return await (await fetch('/api/scans')).json(); } catch(e) { return []; }
+}
+async function exportScansJSON() { download('twinguard_scans.json', JSON.stringify(await scansForExport(), null, 2), 'application/json'); }
+async function exportScansCSV() {
+  const cols = [
+    {label:'timestamp', get:r=>r.timestamp}, {label:'operator', get:r=>r.username},
+    {label:'networks_scanned', get:r=>Array.isArray(r.networks)?r.networks.length:r.scanned},
+    {label:'threats', get:r=>r.threats}, {label:'highest_finding', get:r=>scanFinding(r)},
+    {label:'clock_source', get:r=>r.clock_source}, {label:'integrity_ok', get:r=>r.integrity_ok},
+    {label:'sha256_hash', get:r=>r.sha256_hash},
+  ];
+  download('twinguard_scans.csv', toCSV(await scansForExport(), cols), 'text/csv');
 }
 
 // ── Charts ─────────────────────────────────────
@@ -1405,7 +1586,9 @@ function scanFinding(scan) {
 }
 
 let scanPage = 0;
-const SCANS_PER_PAGE = 12;
+const SCANPP_KEY = 'tg-scanpp';
+let scansPerPage = 12;
+try { const v = localStorage.getItem(SCANPP_KEY); if (v) scansPerPage = Number(v) || 12; } catch(e) {}
 
 function renderScanPager(pages) {
   const pager = document.getElementById('scan-pager');
@@ -1422,9 +1605,9 @@ function renderScans() {
   const tbody = document.getElementById('scan-body');
   const q = (document.getElementById('scan-search').value || '').toLowerCase();
   const list = allScans.filter(s => String(s.username || '').toLowerCase().includes(q));
-  const pages = Math.max(1, Math.ceil(list.length / SCANS_PER_PAGE));
+  const pages = Math.max(1, Math.ceil(list.length / scansPerPage));
   scanPage = Math.min(Math.max(scanPage, 0), pages - 1);
-  const pageItems = list.slice(scanPage * SCANS_PER_PAGE, scanPage * SCANS_PER_PAGE + SCANS_PER_PAGE);
+  const pageItems = list.slice(scanPage * scansPerPage, scanPage * scansPerPage + scansPerPage);
   document.getElementById('scan-count').textContent =
     `${list.length} scan${list.length === 1 ? '' : 's'}` + (pages > 1 ? ` · page ${scanPage + 1}/${pages}` : '');
   if (!list.length) {
@@ -1514,12 +1697,34 @@ async function setUserStatus(sw) {
   loadUsers();
 }
 
+// ── Auto-refresh (per-device) ──────────────────
+const REFRESH_KEY = 'tg-refresh';
+let refreshTimer = null, scansTimer = null;
+function applyRefresh(sec, persist) {
+  sec = Number(sec); if (isNaN(sec) || sec < 0) sec = 10;
+  if (refreshTimer) clearInterval(refreshTimer);
+  if (scansTimer)   clearInterval(scansTimer);
+  refreshTimer = scansTimer = null;
+  const sel = document.getElementById('refresh-interval');
+  if (sel) sel.value = String(sec);
+  const bar = document.getElementById('rfill');
+  if (!sec) {
+    if (bar) bar.style.animationPlayState = 'paused';
+  } else {
+    if (bar) { bar.style.animationDuration = sec + 's'; bar.style.animationPlayState = 'running'; }
+    refreshTimer = setInterval(() => loadData(true), sec * 1000);
+    scansTimer   = setInterval(loadScans, Math.max(sec, 30) * 1000);
+  }
+  if (persist) { try { localStorage.setItem(REFRESH_KEY, sec); } catch(e) {} }
+}
+let savedRefresh = 10;
+try { const v = localStorage.getItem(REFRESH_KEY); if (v !== null && v !== '') savedRefresh = Number(v); } catch(e) {}
+
 loadRetention();
 loadData();
 loadUsers();
 loadScans();
-setInterval(() => loadData(true), 10000);
-setInterval(loadScans, 30000);
+applyRefresh(savedRefresh, false);
 
 // ── Delete user (confirmation modal) ──────────────
 let pendingDelete = null;
@@ -1555,6 +1760,38 @@ async function confirmDeleteUser() {
   loadUsers();
 }
 
+// ── Admin account (change email / password / reset 2FA) ──
+const val = id => document.getElementById(id).value;
+async function postAdmin(url, body, statusEl, okMsg) {
+  statusEl.textContent = '…'; statusEl.className = 'form-status';
+  try {
+    const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { statusEl.textContent = '✗ ' + (d.error || `Failed (HTTP ${r.status})`); statusEl.className = 'form-status err'; return null; }
+    statusEl.textContent = '✓ ' + okMsg; statusEl.className = 'form-status ok';
+    setTimeout(() => { statusEl.textContent = ''; }, 4000);
+    return d;
+  } catch(e) { statusEl.textContent = '✗ Backend not reachable.'; statusEl.className = 'form-status err'; return null; }
+}
+async function changeEmail(ev) {
+  ev.preventDefault();
+  const d = await postAdmin('/api/admin/email', {new_email: val('acc-email'), current_password: val('acc-email-pw')},
+    document.getElementById('acc-email-status'), 'Email updated');
+  if (d && d.email) { document.getElementById('acc-email-pw').value = ''; const se = document.getElementById('signed-in-email'); if (se) se.textContent = d.email; }
+}
+async function changePassword(ev) {
+  ev.preventDefault();
+  const d = await postAdmin('/api/admin/password', {new_password: val('acc-newpw'), current_password: val('acc-pw-cur')},
+    document.getElementById('acc-pw-status'), 'Password updated');
+  if (d) { document.getElementById('acc-newpw').value = ''; document.getElementById('acc-pw-cur').value = ''; }
+}
+async function reset2FA(ev) {
+  ev.preventDefault();
+  const d = await postAdmin('/api/admin/2fa/reset', {current_password: val('acc-2fa-pw')},
+    document.getElementById('acc-2fa-status'), 'Redirecting to QR setup…');
+  if (d && d.redirect) setTimeout(() => { window.location = d.redirect; }, 600);
+}
+
 // ── Event wiring (no inline handlers: the Content-Security-Policy forbids them) ──
 document.getElementById('theme-btn').addEventListener('click', toggleTheme);
 document.getElementById('btn-refresh').addEventListener('click', () => loadData());
@@ -1563,7 +1800,22 @@ document.getElementById('btn-export').addEventListener('click', exportLogs);
 document.getElementById('btn-refresh-scans').addEventListener('click', loadScans);
 document.getElementById('scan-search').addEventListener('input', () => { scanPage = 0; renderScans(); });
 document.getElementById('user-form').addEventListener('submit', addUser);
-document.getElementById('btn-save-retention').addEventListener('click', saveRetention);
+document.getElementById('btn-save-retention').addEventListener('click', () => saveRetentionField('retention-days', 'retention_days', 'ret-status'));
+document.getElementById('btn-save-scan-retention').addEventListener('click', () => saveRetentionField('scan-retention-days', 'scan_retention_days', 'scan-ret-status'));
+document.getElementById('refresh-interval').addEventListener('change', e => applyRefresh(e.target.value, true));
+document.getElementById('scan-pp').value = String(scansPerPage);
+document.getElementById('scan-pp').addEventListener('change', e => {
+  scansPerPage = Number(e.target.value) || 12;
+  try { localStorage.setItem(SCANPP_KEY, scansPerPage); } catch(_) {}
+  scanPage = 0; renderScans();
+});
+document.getElementById('exp-log-json').addEventListener('click', exportLogs);
+document.getElementById('exp-log-csv').addEventListener('click', exportLogsCSV);
+document.getElementById('exp-scan-json').addEventListener('click', exportScansJSON);
+document.getElementById('exp-scan-csv').addEventListener('click', exportScansCSV);
+document.getElementById('email-form').addEventListener('submit', changeEmail);
+document.getElementById('password-form').addEventListener('submit', changePassword);
+document.getElementById('tfa-form').addEventListener('submit', reset2FA);
 document.getElementById('cm-cancel').addEventListener('click', closeDeleteModal);
 document.getElementById('cm-confirm').addEventListener('click', confirmDeleteUser);
 document.getElementById('confirm-modal').addEventListener('click', e => { if (e.target.id === 'confirm-modal') closeDeleteModal(); });

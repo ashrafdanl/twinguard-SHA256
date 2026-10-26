@@ -188,9 +188,16 @@ class FirebaseStore:
 
     def purge_alerts_before(self, cutoff_iso):
         """Delete detections (every operator's space) older than cutoff_iso. Returns the count."""
+        return self._purge_before("detections", cutoff_iso)
+
+    def purge_scans_before(self, cutoff_iso):
+        """Delete scan sweeps (every operator's space) older than cutoff_iso. Returns the count."""
+        return self._purge_before("scans", cutoff_iso)
+
+    def _purge_before(self, collection, cutoff_iso):
         removed = 0
         while True:
-            docs = list(self.db.collection_group("detections")
+            docs = list(self.db.collection_group(collection)
                         .where(filter=FieldFilter("timestamp", "<", cutoff_iso))
                         .limit(400).stream())
             if not docs:
@@ -348,6 +355,23 @@ class FirebaseStore:
             raise
         self._admin_exists = True
         return user.uid
+
+    def update_admin_password(self, uid, new_password):
+        """Change the super admin's Firebase Auth password (self-service)."""
+        try:
+            auth.update_user(uid, password=new_password)
+        except ValueError as e:
+            raise FirebaseError(str(e))
+
+    def update_admin_email(self, uid, new_email):
+        """Change the super admin's sign-in email in Auth and in the admins record."""
+        try:
+            auth.update_user(uid, email=new_email)
+        except auth.EmailAlreadyExistsError:
+            raise FirebaseError("An account with this email already exists")
+        except ValueError as e:
+            raise FirebaseError(str(e))
+        self._admins().document(uid).update({"email": new_email})
 
     # ── Admin 2FA ────────────────────────────────────────────────────────────
     def set_admin_totp(self, uid, secret, counter, enrolled_at):
