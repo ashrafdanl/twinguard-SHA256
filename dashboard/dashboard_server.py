@@ -532,8 +532,8 @@ tr.new-row td{animation:flashRow .8s ease;}
 .donut-wrap{display:flex;align-items:center;gap:24px;flex-wrap:wrap;}
 .donut{width:180px;height:180px;flex-shrink:0;}
 .donut .ring{fill:none;stroke:color-mix(in srgb,var(--border) 55%,transparent);stroke-width:26;}
-.donut .seg{fill:none;stroke-width:26;cursor:pointer;transition:opacity .15s;}
-.donut .seg:hover,.donut .seg:focus{opacity:.78;outline:none;}
+.donut .seg{fill:none;stroke-width:26;cursor:pointer;filter:drop-shadow(0 0 5px currentColor);transition:opacity .15s,filter .15s;}
+.donut .seg:hover,.donut .seg:focus{opacity:.9;filter:drop-shadow(0 0 9px currentColor);outline:none;}
 .donut-total{font-family:var(--sans);font-size:36px;font-weight:900;fill:var(--text);}
 .donut-cap{font-family:var(--mono);font-size:13px;letter-spacing:2px;fill:var(--dim);}
 .legend{display:flex;flex-direction:column;gap:12px;flex:1;min-width:160px;}
@@ -1003,6 +1003,7 @@ function renderDonut(stats) {
         'stroke-dasharray': `${draw} ${C - draw}`, 'stroke-dashoffset': -offset,
         transform: 'rotate(-90 100 100)', 'aria-label': `${s.label}: ${counts[i]}`});
       seg.style.stroke = s.color;
+      seg.style.color  = s.color;   // drives the drop-shadow glow (see .donut .seg)
       bindTip(seg, null, [{color:s.color, value:counts[i], label:`${s.label} severity · ${pct}%`}]);
       svg.append(seg);
       offset += len;
