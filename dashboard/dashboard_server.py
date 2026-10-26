@@ -613,6 +613,7 @@ tr.new-row td{animation:flashRow .8s ease;}
 .uname{font-weight:700;} .umeta{font-size:15px;color:var(--dim);}
 tr.disabled td{opacity:.6;} tr.disabled td:nth-child(4),tr.disabled td:last-child{opacity:1;}
 .row-actions{white-space:nowrap;} .row-actions .btn+.btn{margin-left:6px;}
+.btn.icon-btn{padding:5px 9px;font-size:15px;line-height:1;}
 .status-cell{display:flex;align-items:center;gap:10px;}
 .tswitch{position:relative;flex:none;width:52px;height:30px;padding:0;border-radius:15px;border:1px solid #c9ccd1;
   background:#e2e4e8;cursor:pointer;transition:background .25s,border-color .25s;}
@@ -1218,7 +1219,7 @@ async function loadUsers() {
       <td class="ts">${fmtTs(u.last_login)}</td>
       <td class="row-actions">
         <button class="btn sm" type="button" data-action="log" data-id="${esc(u.id)}">📄 View Log</button>
-        <button class="btn sm danger" type="button" data-action="delete" data-id="${esc(u.id)}" data-name="${esc(u.username)}">🗑 Delete</button></td>
+        <button class="btn sm danger icon-btn" type="button" data-action="delete" data-id="${esc(u.id)}" data-name="${esc(u.username)}" title="Delete user" aria-label="Delete ${esc(u.username)}">🗑</button></td>
     </tr>`).join('');
   } catch(e) {
     tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
