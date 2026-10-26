@@ -344,6 +344,15 @@ def set_user_status(user_id):
     print(f"[Users] {'Enabled' if data['enabled'] else 'Disabled'} user '{username}'.")
     return jsonify({"id": user_id, "enabled": data["enabled"]})
 
+@app.route("/api/users/<user_id>/delete", methods=["POST"])
+def delete_user(user_id):
+    try:
+        username = store.delete_user(user_id)
+    except KeyError:
+        return jsonify({"error": "User not found"}), 404
+    print(f"[Users] Deleted user '{username}' and all their data.")
+    return jsonify({"id": user_id, "deleted": True})
+
 
 # ── Dashboard HTML ────────────────────────────────────────────────────────────
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -565,6 +574,16 @@ tr.new-row td{animation:flashRow .8s ease;}
 .hb-fill{height:100%;border-radius:5px;background:var(--accent);transition:width .4s ease;}
 .hb-val{font-family:var(--mono);text-align:right;}
 .chart-empty{font-family:var(--mono);font-size:15px;color:var(--dim);padding:36px 0;text-align:center;}
+.modal-overlay{position:fixed;inset:0;z-index:600;display:flex;align-items:center;justify-content:center;padding:20px;
+  background:rgba(4,10,22,.62);backdrop-filter:blur(3px);}
+.modal-overlay[hidden]{display:none;}
+.modal{width:100%;max-width:420px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:22px 24px;box-shadow:0 20px 60px -15px rgba(0,0,0,.7);animation:modalIn .15s ease;}
+@keyframes modalIn{from{opacity:0;transform:translateY(8px) scale(.98);}to{opacity:1;transform:none;}}
+.modal-title{font-size:18px;font-weight:700;color:var(--danger);margin-bottom:12px;}
+.modal-body{font-size:15px;color:var(--text);line-height:1.55;margin-bottom:20px;}
+.modal-body b{color:var(--text);}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;}
 .tip{position:fixed;pointer-events:none;z-index:500;background:var(--panel2);border:1px solid var(--border);
   border-radius:6px;padding:9px 12px;min-width:120px;box-shadow:0 10px 30px rgba(0,0,0,.35);}
 .tip-title{font-family:var(--mono);font-size:13px;letter-spacing:1.5px;color:var(--dim);margin-bottom:6px;}
@@ -777,6 +796,17 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
 </main>
 
 <div class="tip" id="tip" hidden></div>
+
+<div class="modal-overlay" id="confirm-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cm-title" aria-describedby="cm-body">
+    <div class="modal-title" id="cm-title">⚠ Delete user</div>
+    <div class="modal-body" id="cm-body"></div>
+    <div class="modal-actions">
+      <button class="btn" type="button" id="cm-cancel">Cancel</button>
+      <button class="btn danger" type="button" id="cm-confirm">Delete</button>
+    </div>
+  </div>
+</div>
 
 <footer>TwinGuard-SHA256 &nbsp;|&nbsp; GMI Final Year Project JAN 2026 &nbsp;|&nbsp; SEM 4 DCBS 6</footer>
 </div>
@@ -1187,7 +1217,8 @@ async function loadUsers() {
       <td class="ts">${fmtTs(u.created_at)}</td>
       <td class="ts">${fmtTs(u.last_login)}</td>
       <td class="row-actions">
-        <button class="btn sm" type="button" data-action="log" data-id="${esc(u.id)}">📄 View Log</button></td>
+        <button class="btn sm" type="button" data-action="log" data-id="${esc(u.id)}">📄 View Log</button>
+        <button class="btn sm danger" type="button" data-action="delete" data-id="${esc(u.id)}" data-name="${esc(u.username)}">🗑 Delete</button></td>
     </tr>`).join('');
   } catch(e) {
     tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
@@ -1234,6 +1265,40 @@ loadData();
 loadUsers();
 setInterval(() => loadData(true), 10000);
 
+// ── Delete user (confirmation modal) ──────────────
+let pendingDelete = null;
+function askDeleteUser(id, name) {
+  pendingDelete = id;
+  const body = document.getElementById('cm-body');
+  body.replaceChildren(
+    document.createTextNode('Permanently delete '),
+    htmlEl('b', '', name || 'this user'),
+    document.createTextNode('? This removes their account and every detection and scan they uploaded. This cannot be undone.')
+  );
+  const m = document.getElementById('confirm-modal');
+  m.hidden = false;
+  document.getElementById('cm-confirm').focus();
+}
+function closeDeleteModal() {
+  document.getElementById('confirm-modal').hidden = true;
+  pendingDelete = null;
+}
+async function confirmDeleteUser() {
+  if (!pendingDelete) return;
+  const id = pendingDelete, btn = document.getElementById('cm-confirm');
+  const err = document.getElementById('user-err'); err.textContent = '';
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/users/${encodeURIComponent(id)}/delete`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+    });
+    if (!r.ok) err.textContent = '✗ ' + ((await r.json().catch(() => ({}))).error || `Failed (HTTP ${r.status})`);
+  } catch(e) { err.textContent = '✗ Backend not reachable.'; }
+  btn.disabled = false;
+  closeDeleteModal();
+  loadUsers();
+}
+
 // ── Event wiring (no inline handlers: the Content-Security-Policy forbids them) ──
 document.getElementById('theme-btn').addEventListener('click', toggleTheme);
 document.getElementById('btn-refresh').addEventListener('click', () => loadData());
@@ -1241,6 +1306,10 @@ document.getElementById('search').addEventListener('input', filterTable);
 document.getElementById('btn-export').addEventListener('click', exportLogs);
 document.getElementById('user-form').addEventListener('submit', addUser);
 document.getElementById('btn-save-retention').addEventListener('click', saveRetention);
+document.getElementById('cm-cancel').addEventListener('click', closeDeleteModal);
+document.getElementById('cm-confirm').addEventListener('click', confirmDeleteUser);
+document.getElementById('confirm-modal').addEventListener('click', e => { if (e.target.id === 'confirm-modal') closeDeleteModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !document.getElementById('confirm-modal').hidden) closeDeleteModal(); });
 document.getElementById('font-scale').addEventListener('input', e => applyFontScale(e.target.value));
 document.querySelectorAll('#fs-ticks span').forEach(s => s.addEventListener('click', () => applyFontScale(s.dataset.fs)));
 document.getElementById('user-body').addEventListener('click', ev => {
@@ -1248,6 +1317,7 @@ document.getElementById('user-body').addEventListener('click', ev => {
   if (!b) return;
   if (b.dataset.action === 'log') openUserLog(b.dataset.id);
   else if (b.dataset.action === 'toggle') setUserStatus(b);
+  else if (b.dataset.action === 'delete') askDeleteUser(b.dataset.id, b.dataset.name);
 });
 setInterval(() => {
   const el = document.getElementById('rfill');

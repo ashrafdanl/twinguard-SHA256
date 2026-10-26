@@ -217,6 +217,36 @@ class FirebaseStore:
             self._users[user.uid] = profile
         return user.uid
 
+    def delete_user(self, uid):
+        """Remove an operator: their detections and scans, their profile, then their
+        Firebase Auth account. Irreversible. Returns the deleted username."""
+        if uid not in self.user_profiles():
+            raise KeyError(uid)
+        username = self._users.get(uid, {}).get("username", uid)
+        for coll in ("detections", "scans"):
+            ref = self.db.collection("users").document(uid).collection(coll)
+            while True:
+                docs = list(ref.limit(400).stream())
+                if not docs:
+                    break
+                batch = self.db.batch()
+                for d in docs:
+                    batch.delete(d.reference)
+                batch.commit()
+        self.db.collection("users").document(uid).delete()
+        try:
+            auth.delete_user(uid)
+        except auth.UserNotFoundError:
+            pass    # already gone in Auth; removing the profile is what locks them out
+        except firebase_admin.exceptions.FirebaseError as e:
+            raise FirebaseError(f"Firebase refused the delete: {e}")
+        with self._lock:
+            self._users.pop(uid, None)
+            prefix = f"users/{uid}/"
+            for k in [k for k in self._alerts if k.startswith(prefix)]:
+                self._alerts.pop(k, None)
+        return username
+
     def set_user_enabled(self, uid, enabled):
         if uid not in self.user_profiles():
             raise KeyError(uid)
