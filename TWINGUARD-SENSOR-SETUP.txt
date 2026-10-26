@@ -1,0 +1,93 @@
+TWINGUARD SENSOR — RASPBERRY PI SETUP
+=====================================
+
+This adds the control service that the phone app talks to. Your existing
+detection engine, SHA-256 sealing and local dashboard are untouched.
+
+WHAT IS NEW IN THIS FOLDER
+--------------------------
+detection/parser.py        Fixed: hidden networks (<length: 0>) are no longer
+                           grouped together and mis-flagged as an evil twin.
+detection/tg_system.py     Real telemetry (CPU, memory, temp, uptime) and the
+                           phone->Pi clock sync. No RTC on the Pi 4, so the
+                           phone can set the clock; every record says whether
+                           the time came from NTP, the phone, or is unsynced.
+detection/tg_engine.py     The same scoring as detection.py, but it seals each
+                           alert AND each whole scan for Firestore, stamps the
+                           operator username, and honours the trusted list.
+detection/tg_firestore.py  Uploads as the operator (email/password) through
+                           your Firestore security rules. Offline queue on disk;
+                           retries never duplicate (document id = the SHA-256).
+detection/tg_trusted.py    The trusted-network list the app manages.
+detection/tg_control.py    The HTTPS control service on port 8080.
+install.sh                 One-command installer (sets up the service).
+
+The sensor only ever LISTENS. There is no transmit / "active" mode by design.
+
+BEFORE YOU START
+----------------
+- Put the USB adapter into monitor mode interface wlan1 (the installer sets the
+  service to do `iw dev wlan1 set type monitor` on start; change wlan1 in
+  install.sh if yours differs).
+- The operator account is Test02 (ilhmsshyli@gmail.com). That account must
+  already exist in the dashboard with role operator and enabled = true, or the
+  Firestore rules will refuse every upload.
+- The Pi needs internet (the phone hotspot is fine) to reach Firebase.
+
+INSTALL
+-------
+Copy this folder onto the Pi (or pull your repo), then:
+
+    cd twinguard-SHA256
+    chmod +x install.sh
+    ./install.sh
+
+It will:
+  * install airodump-ng (aircrack-ng), iw, openssl and the Python packages
+  * generate an API key and a self-signed TLS certificate
+  * ASK FOR THE TEST02 PASSWORD — type it on the Pi only (it is written to a
+    chmod-600 file and is never printed or sent anywhere but Google sign-in)
+  * install and start a systemd service (twinguard.service)
+  * print the IP address, API key and certificate FINGERPRINT
+
+IN THE PHONE APP
+----------------
+Settings -> Raspberry Pi sensor:
+    IP address   <the IP the installer printed>
+    Port         8080
+    API key      <the key the installer printed>
+    Protocol     HTTPS
+Then tap TEST CONNECTION. The app shows the certificate fingerprint the first
+time and asks you to confirm it. Check it matches the one the installer printed,
+then tap TRUST THIS SENSOR. From then on the app refuses any other certificate.
+
+DAY TO DAY
+----------
+    systemctl status twinguard         is it running
+    journalctl -u twinguard -f         live logs ([CONTROL]/[FIRESTORE]/[SNIFFER])
+    sudo systemctl restart twinguard   after editing the config
+
+The config (with the password) lives at ~/.config/twinguard/service.json (0600).
+Pending uploads and the trusted list live in ~/.local/share/twinguard/.
+
+A QUIET AREA GIVES ZERO ALERTS — THAT IS CORRECT
+------------------------------------------------
+The engine only flags a network when two or more APs share one SSID and one
+looks wrong. To demonstrate an evil-twin alert safely, bring up a second AP
+(e.g. a phone hotspot) using the SAME name as one of your own networks near the
+Pi. TwinGuard will flag the unexpected one.
+
+
+ADMIN DASHBOARD (reads the cloud — Firestore)
+---------------------------------------------
+dashboard/dashboard_server.py is now the ADMIN view. It uses the Firebase
+Admin SDK to read EVERY operator's detections from Firestore (project
+twinguard67) and verifies each SHA-256 seal. Run it on a trusted machine:
+
+    # the Admin key must be present (it bypasses all rules — keep it private):
+    #   secrets/firebase-service-account.json   (or set GOOGLE_APPLICATION_CREDENTIALS)
+    ~/twinguard-SHA256/.venv/bin/python dashboard/dashboard_server.py
+    # then open http://127.0.0.1:5000
+
+install.sh already installs firebase-admin into the venv. The sensor itself
+does NOT use this key — only the admin dashboard does.

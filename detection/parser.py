@@ -2,6 +2,23 @@ import csv
 import os
 
 
+def _clean_ssid(raw: str) -> str:
+    """Return the broadcast name, or "" for a hidden network.
+
+    airodump-ng writes a hidden SSID in several ways: an empty field, a run of
+    NUL bytes, or a placeholder such as "<length:  0>" / "<length: 7>". The
+    original parser kept the placeholder as if it were a real name, so two
+    unrelated hidden APs both "named" "<length:  0>" were grouped together and
+    scored as an evil twin. They are now normalised to "".
+    """
+    ssid = raw.strip()
+    if ssid.startswith("<length:") and ssid.endswith(">"):
+        return ""
+    if ssid.replace("\x00", "").strip() == "":
+        return ""
+    return ssid
+
+
 def parse_airodump_csv(csv_path: str) -> list[dict]:
     """
     Parse airodump-ng CSV output.
@@ -9,13 +26,18 @@ def parse_airodump_csv(csv_path: str) -> list[dict]:
     Returns:
         [
             {
-                "ssid": "...",
+                "ssid": "...",          # "" when the network is hidden
                 "bssid": "...",
                 "signal": -45,
                 "channel": 6,
-                "encryption": "WPA2"
+                "encryption": "WPA2 CCMP PSK",
+                "hidden": False
             }
         ]
+
+    Hidden networks are returned with ssid "" and hidden True. The detection
+    engine only groups non-empty SSIDs, so they never take part in evil-twin
+    scoring, but they are kept for the forensic scan record.
     """
 
     networks = []
@@ -54,21 +76,20 @@ def parse_airodump_csv(csv_path: str) -> list[dict]:
                     cipher = row[6].strip()
                     auth = row[7].strip()
 
-                    ssid = row[13].strip()
+                    ssid = _clean_ssid(row[13])
 
                     encryption = f"{privacy} {cipher} {auth}".strip()
 
-                    if ssid:
-                        networks.append({
-                            "ssid": ssid,
-                            "bssid": bssid,
-                            "signal": signal,
-                            "channel": channel,
-                            "encryption": encryption
-                        })
+                    networks.append({
+                        "ssid": ssid,
+                        "bssid": bssid,
+                        "signal": signal,
+                        "channel": channel,
+                        "encryption": encryption,
+                        "hidden": ssid == "",
+                    })
 
                 except (IndexError, ValueError):
                     continue
 
     return networks
-

@@ -130,8 +130,7 @@ class TelegramNotifier:
         ts        = alert.get("timestamp", datetime.datetime.utcnow().isoformat() + "Z")
 
         return (
-            ("🧪 *SIMULATED ALERT \\(TEST ONLY\\)*\n" if alert.get("simulated") else "")
-            + f"{emoji} *TWINGUARD ALERT — {severity} SEVERITY*\n"
+            f"{emoji} *TWINGUARD ALERT — {severity} SEVERITY*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🌐 *SSID*      : `{ssid}`\n"
             f"📡 *BSSID*     : `{bssid}`\n"
