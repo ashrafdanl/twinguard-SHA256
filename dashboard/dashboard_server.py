@@ -265,6 +265,24 @@ def get_logs():
         result.append(copy)
     return jsonify(result)
 
+@app.route("/api/logs/low", methods=["GET"])
+def get_low_logs():
+    result = []
+    for e in store.low_detections():
+        copy = dict(e)
+        copy["integrity_ok"] = verify_sha256(e)
+        result.append(copy)
+    return jsonify(result)
+
+@app.route("/api/scans", methods=["GET"])
+def get_scans():
+    result = []
+    for e in store.scans():
+        copy = dict(e)
+        copy["integrity_ok"] = verify_sha256(e)   # verify ORIGINAL, attach to COPY
+        result.append(copy)
+    return jsonify(result)
+
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
     logs   = store.alerts()
@@ -540,6 +558,23 @@ tr:last-child td{border-bottom:none;}
 tbody tr:hover td{background:var(--glow);}
 tr.new-row td{animation:flashRow .8s ease;}
 @keyframes flashRow{from{background:rgba(255,90,118,.22)}to{background:transparent}}
+/* Scans: clickable summary row that expands to the networks it saw */
+tr.scan-row{cursor:pointer;}
+tr.scan-row .caret{display:inline-block;width:14px;color:var(--dim);transition:transform .15s;}
+tr.scan-row.open .caret{transform:rotate(90deg);color:var(--accent);}
+tr.scan-detail > td{padding:0;background:var(--panel2);}
+tr.scan-detail[hidden]{display:none;}
+.net-table{width:100%;border-collapse:collapse;}
+.net-table th{background:transparent;font-size:12px;padding:9px 12px;}
+.net-table td{padding:9px 12px;font-size:14px;border-bottom:1px solid color-mix(in srgb,var(--border) 40%,transparent);}
+.net-table tr:hover td{background:transparent;}
+.badge.CLEAN{background:color-mix(in srgb,var(--dim) 14%,transparent);color:var(--dim);border:1px solid var(--dim);}
+.badge.CLEAR{background:color-mix(in srgb,var(--safe) 10%,transparent);color:var(--safe);border:1px solid color-mix(in srgb,var(--safe) 60%,transparent);}
+.badge.BASELINE,.badge.TRUSTED{background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 55%,transparent);}
+.pager{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:16px;}
+.pager:empty{display:none;}
+.pager .pager-ind{font-family:var(--mono);font-size:14px;color:var(--dim);letter-spacing:1px;}
+.pager .btn[disabled]{opacity:.4;cursor:not-allowed;}
 
 .badge{display:inline-block;padding:3px 10px;border-radius:4px;font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:1px;}
 .badge.HIGH{background:color-mix(in srgb,var(--danger) 15%,transparent);color:var(--danger);border:1px solid var(--danger);}
@@ -695,6 +730,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
     <div class="nav-title" aria-hidden="true">&nbsp;</div>
     <a href="#overview" class="active"><span class="ico">◈</span>Overview</a>
     <a href="#threats"><span class="ico">⚠</span>Threat Log</a>
+    <a href="#scans"><span class="ico">📡</span>Scans</a>
     <a href="#users"><span class="ico">👥</span>User Management</a>
     <a href="#settings"><span class="ico">⚙</span>Settings</a>
   </nav>
@@ -779,6 +815,27 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
     </div>
   </section>
 
+  <section id="scans">
+    <div class="sec-head"><div class="sec-title">Scans</div><div class="sec-note">every sealed sweep · newest first · click a row for the networks seen</div></div>
+    <div class="controls">
+      <button class="btn primary" id="btn-refresh-scans" type="button">↻ Refresh</button>
+      <input class="search" id="scan-search" type="text" placeholder="Filter by operator...">
+      <span class="sec-note" id="scan-count"></span>
+    </div>
+    <div class="panel table-wrap">
+      <table>
+        <thead><tr>
+          <th>Timestamp (GMT+8)</th><th>Operator</th><th>Networks</th><th>Threats</th>
+          <th>Highest Finding</th><th>Clock</th><th>SHA-256 Integrity</th>
+        </tr></thead>
+        <tbody id="scan-body">
+          <tr><td colspan="7" class="empty-state"><div class="icon">📡</div>Loading scans...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="pager" id="scan-pager"></div>
+  </section>
+
   <section id="users">
     <div class="sec-head"><div class="sec-title">User Management</div><div class="sec-note">operator accounts for the TwinGuard app</div></div>
     <div class="panel">
@@ -853,7 +910,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
 </div>
 
 <script nonce="{{ csp_nonce }}">
-let allLogs = [], allUsers = [], activeTab = null, prevCounts = {};
+let allLogs = [], allUsers = [], activeTab = null, prevCounts = {}, allScans = [], trendLogs = [];
 
 // ── Session guard + CSRF: writes carry the page's token; 401 = session ended ──
 const CSRF   = document.querySelector('meta[name="csrf-token"]').content;
@@ -948,9 +1005,14 @@ async function saveRetention() {
 async function loadData(background = false) {
   const opts = background ? {headers: {'X-Background': '1'}} : {};
   try {
-    const [sr, lr] = await Promise.all([fetch('/api/stats', opts), fetch('/api/logs', opts)]);
+    const [sr, lr, lowr] = await Promise.all([
+      fetch('/api/stats', opts), fetch('/api/logs', opts), fetch('/api/logs/low', opts)]);
     const stats = await sr.json();
     allLogs     = await lr.json();
+    // LOW detections are fetched only for the trend graph; the Threat Log,
+    // stats and reason/SSID bars stay HIGH+MEDIUM.
+    const low   = await lowr.json().catch(() => []);
+    trendLogs   = allLogs.concat(Array.isArray(low) ? low : []);
     document.getElementById('stat-total').textContent  = stats.total_alerts;
     document.getElementById('stat-high').textContent   = stats.high + stats.medium;
     document.getElementById('stat-users').textContent  = stats.total_users;
@@ -1232,7 +1294,7 @@ function renderTrend(logs) {
     row.addEventListener('click', () => {
       trendFilter = trendFilter === s.key ? null : s.key;
       hideTip();
-      renderTrend(allLogs);
+      renderTrend(trendLogs);
     });
     return row;
   }));
@@ -1267,7 +1329,7 @@ function renderCharts(logs, stats) {
   hideTip();
   renderStats(logs);
   renderDonut(stats);
-  renderTrend(logs);
+  renderTrend(trendLogs.length ? trendLogs : logs);
 
   const reasons = Object.fromEntries(KNOWN_REASONS.map(r => [r, 0]));
   logs.forEach(l => (Array.isArray(l.reasons) ? l.reasons : []).forEach(r => { r = String(r); reasons[r] = (reasons[r] || 0) + 1; }));
@@ -1279,7 +1341,7 @@ function renderCharts(logs, stats) {
 }
 
 let resizeTimer;
-window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => renderTrend(allLogs), 150); });
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => renderTrend(trendLogs), 150); });
 
 // ── Users ──────────────────────────────────────
 async function loadUsers() {
@@ -1309,6 +1371,96 @@ async function loadUsers() {
         <button class="btn sm" type="button" data-action="log" data-id="${esc(u.id)}">📄 View Log</button>
         <button class="btn sm icon-btn trash-btn" type="button" data-action="delete" data-id="${esc(u.id)}" data-name="${esc(u.username)}" title="Delete user" aria-label="Delete ${esc(u.username)}"><img src="/static/trash.png" alt=""></button></td>
     </tr>`).join('');
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
+  }
+}
+
+// ── Scans ──────────────────────────────────────
+const sevRank = s => ({HIGH:3, MEDIUM:2, LOW:1}[s] || 0);
+
+// Highest finding in a sweep: a raised alert's level (HIGH/MEDIUM), else LOW if
+// anything scored below the alert threshold, else CLEAN.
+function scanFinding(scan) {
+  const nets = Array.isArray(scan.networks) ? scan.networks : [];
+  let worstLvl = null, worstScore = 0;
+  nets.forEach(n => {
+    if (n.threat_level && sevRank(n.threat_level) > sevRank(worstLvl)) worstLvl = n.threat_level;
+    if (typeof n.score === 'number' && n.score > worstScore) worstScore = n.score;
+  });
+  return worstLvl || (worstScore >= 1 ? 'LOW' : 'CLEAN');
+}
+
+let scanPage = 0;
+const SCANS_PER_PAGE = 12;
+
+function renderScanPager(pages) {
+  const pager = document.getElementById('scan-pager');
+  pager.replaceChildren();
+  if (pages <= 1) return;
+  const prev = htmlEl('button', 'btn sm', '‹ Prev'); prev.type = 'button'; prev.disabled = scanPage === 0;
+  prev.addEventListener('click', () => { scanPage--; renderScans(); });
+  const next = htmlEl('button', 'btn sm', 'Next ›'); next.type = 'button'; next.disabled = scanPage >= pages - 1;
+  next.addEventListener('click', () => { scanPage++; renderScans(); });
+  pager.append(prev, htmlEl('span', 'pager-ind', `Page ${scanPage + 1} of ${pages}`), next);
+}
+
+function renderScans() {
+  const tbody = document.getElementById('scan-body');
+  const q = (document.getElementById('scan-search').value || '').toLowerCase();
+  const list = allScans.filter(s => String(s.username || '').toLowerCase().includes(q));
+  const pages = Math.max(1, Math.ceil(list.length / SCANS_PER_PAGE));
+  scanPage = Math.min(Math.max(scanPage, 0), pages - 1);
+  const pageItems = list.slice(scanPage * SCANS_PER_PAGE, scanPage * SCANS_PER_PAGE + SCANS_PER_PAGE);
+  document.getElementById('scan-count').textContent =
+    `${list.length} scan${list.length === 1 ? '' : 's'}` + (pages > 1 ? ` · page ${scanPage + 1}/${pages}` : '');
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-state"><div class="icon"><img class="check" src="/static/check.webp" alt=""></div>No scans recorded yet.</td></tr>`;
+    renderScanPager(pages);
+    return;
+  }
+  tbody.innerHTML = pageItems.map(s => {
+    const nets = Array.isArray(s.networks) ? s.networks : [];
+    const finding = scanFinding(s);
+    const iok = s.integrity_ok;
+    const istr = iok === undefined ? '<span class="hash">—</span>'
+               : iok ? '<span class="int-ok">✓ VALID</span>' : '<span class="int-fail">✗ TAMPERED</span>';
+    const threats = Number(s.threats) || 0;
+    const detail = nets.length ? `<table class="net-table"><thead><tr>
+        <th>SSID</th><th>BSSID</th><th>Signal</th><th>Ch</th><th>Encryption</th><th>Status</th><th>Score</th><th>Reasons</th></tr></thead>
+        <tbody>${nets.map(n => `<tr>
+          <td><strong>${esc(n.ssid || '?')}</strong></td>
+          <td class="bssid">${esc(n.bssid || '?')}</td>
+          <td>${esc(n.signal_dbm)} dBm</td>
+          <td>${esc(n.channel)}</td>
+          <td>${esc(n.encryption || '?')}</td>
+          <td><span class="badge ${esc(n.threat_level || n.status || '')}">${esc(n.status || '?')}</span></td>
+          <td>${esc(n.score)}</td>
+          <td class="reasons">${(Array.isArray(n.reasons) ? n.reasons : []).map(esc).join(' · ') || '—'}</td>
+        </tr>`).join('')}</tbody></table>` : '<div class="chart-empty">No networks recorded.</div>';
+    return `<tr class="scan-row">
+        <td class="ts"><span class="caret">▸</span> ${esc(fmtTs(s.timestamp))}</td>
+        <td><strong>${esc(s.username || '?')}</strong>${s.simulated === true ? ' <span class="badge sim" title="Simulated sweep (test only, not real evidence)">SIM</span>' : ''}</td>
+        <td>${esc(nets.length)}</td>
+        <td>${threats > 0 ? `<span class="badge HIGH">${threats}</span>` : '0'}</td>
+        <td><span class="badge ${finding}">${finding}</span></td>
+        <td class="hash">${esc(s.clock_source || '—')}</td>
+        <td>${istr}<br><span class="hash">${esc(String(s.sha256_hash || '').substring(0, 20))}…</span></td>
+      </tr>
+      <tr class="scan-detail" hidden><td colspan="7">${detail}</td></tr>`;
+  }).join('');
+  tbody.querySelectorAll('.scan-row').forEach(row => row.addEventListener('click', () => {
+    const d = row.nextElementSibling;
+    if (d && d.classList.contains('scan-detail')) { d.hidden = !d.hidden; row.classList.toggle('open', !d.hidden); }
+  }));
+  renderScanPager(pages);
+}
+
+async function loadScans() {
+  const tbody = document.getElementById('scan-body');
+  try {
+    allScans = await (await fetch('/api/scans')).json();
+    renderScans();
   } catch(e) {
     tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
   }
@@ -1352,7 +1504,9 @@ async function setUserStatus(sw) {
 loadRetention();
 loadData();
 loadUsers();
+loadScans();
 setInterval(() => loadData(true), 10000);
+setInterval(loadScans, 30000);
 
 // ── Delete user (confirmation modal) ──────────────
 let pendingDelete = null;
@@ -1393,6 +1547,8 @@ document.getElementById('theme-btn').addEventListener('click', toggleTheme);
 document.getElementById('btn-refresh').addEventListener('click', () => loadData());
 document.getElementById('search').addEventListener('input', filterTable);
 document.getElementById('btn-export').addEventListener('click', exportLogs);
+document.getElementById('btn-refresh-scans').addEventListener('click', loadScans);
+document.getElementById('scan-search').addEventListener('input', () => { scanPage = 0; renderScans(); });
 document.getElementById('user-form').addEventListener('submit', addUser);
 document.getElementById('btn-save-retention').addEventListener('click', saveRetention);
 document.getElementById('cm-cancel').addEventListener('click', closeDeleteModal);

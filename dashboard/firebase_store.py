@@ -153,6 +153,39 @@ class FirebaseStore:
             self._counts = (time.time(), counts)
         return dict(counts)
 
+    def low_detections(self, limit=500):
+        """LOW-severity detections from every operator's space. These are not
+        live-watched (they are not alerts), so they are read on demand for the
+        trend chart. Bounded; the chart only plots the last 14 days anyway."""
+        try:
+            docs = list(self.db.collection_group("detections")
+                        .where(filter=FieldFilter("severity", "==", "LOW"))
+                        .limit(limit).stream())
+        except Exception as e:
+            print(f"[Firebase] LOW detections query failed: {str(e)[:120]}")
+            return []
+        return [d.to_dict() for d in docs]
+
+    # ── Scans ─────────────────────────────────────────────────────────────────
+    def scans(self, limit=200):
+        """Recent scan sweeps from every operator's space, newest first.
+
+        Scans can be numerous and are not security alerts, so they are read on
+        demand (bounded) rather than live-watched. Falls back to an unordered
+        read + in-memory sort if the collection-group order index is not ready."""
+        group = self.db.collection_group("scans")
+        try:
+            docs = list(group.order_by("timestamp", direction=firestore.Query.DESCENDING)
+                        .limit(limit).stream())
+        except Exception as e:
+            if not getattr(self, "_scan_index_warned", False):
+                print(f"[Firebase] Scans order index not ready, reading unordered: {str(e)[:120]}")
+                self._scan_index_warned = True
+            docs = list(group.limit(limit).stream())
+        entries = [d.to_dict() for d in docs]
+        entries.sort(key=lambda s: str(s.get("timestamp", "")), reverse=True)
+        return entries
+
     def purge_alerts_before(self, cutoff_iso):
         """Delete detections (every operator's space) older than cutoff_iso. Returns the count."""
         removed = 0
