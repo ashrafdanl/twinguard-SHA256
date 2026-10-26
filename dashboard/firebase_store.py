@@ -167,24 +167,27 @@ class FirebaseStore:
         return [d.to_dict() for d in docs]
 
     # ── Scans ─────────────────────────────────────────────────────────────────
-    def scans(self, limit=200):
-        """Recent scan sweeps from every operator's space, newest first.
+    def scans(self, limit=1000):
+        """The newest scan sweeps from every operator's space, newest first.
 
         Scans can be numerous and are not security alerts, so they are read on
-        demand (bounded) rather than live-watched. Falls back to an unordered
-        read + in-memory sort if the collection-group order index is not ready."""
+        demand rather than live-watched. The fast path uses the timestamp order
+        index; without it we read the whole collection group (bounded) and sort
+        in memory, so the newest `limit` are returned rather than an arbitrary
+        subset that silently drops scans."""
         group = self.db.collection_group("scans")
         try:
             docs = list(group.order_by("timestamp", direction=firestore.Query.DESCENDING)
                         .limit(limit).stream())
         except Exception as e:
             if not getattr(self, "_scan_index_warned", False):
-                print(f"[Firebase] Scans order index not ready, reading unordered: {str(e)[:120]}")
+                print(f"[Firebase] Scans order index not ready; reading all and sorting "
+                      f"in memory (create the index for efficiency): {str(e)[:120]}")
                 self._scan_index_warned = True
-            docs = list(group.limit(limit).stream())
+            docs = list(group.limit(5000).stream())
         entries = [d.to_dict() for d in docs]
         entries.sort(key=lambda s: str(s.get("timestamp", "")), reverse=True)
-        return entries
+        return entries[:limit]
 
     def purge_alerts_before(self, cutoff_iso):
         """Delete detections (every operator's space) older than cutoff_iso. Returns the count."""
