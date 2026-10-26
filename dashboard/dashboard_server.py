@@ -557,6 +557,7 @@ tr.new-row td{animation:flashRow .8s ease;}
 .ts{font-family:var(--mono);font-size:14px;color:var(--dim);}
 .empty-state{text-align:center;padding:70px 20px;color:var(--dim);font-family:var(--mono);}
 .empty-state .icon{font-size:44px;margin-bottom:14px;}
+.empty-state .icon img.check{width:52px;height:52px;display:inline-block;vertical-align:middle;}
 
 /* ── Charts ────────────────────────────── */
 .stat-card.recent{--c:var(--warning);}
@@ -954,7 +955,7 @@ async function loadData(background = false) {
 function renderTable(logs, highlight=false, emptyMsg='No alerts.') {
   const tbody = document.getElementById('log-body');
   if (!logs.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="empty-state"><div class="icon">✅</div>${esc(emptyMsg)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-state"><div class="icon"><img class="check" src="/static/check.webp" alt=""></div>${esc(emptyMsg)}</td></tr>`;
     return;
   }
   tbody.innerHTML = logs.map((l,i) => {
