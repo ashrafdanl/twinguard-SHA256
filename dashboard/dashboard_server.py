@@ -581,10 +581,21 @@ tr.new-row td{animation:flashRow .8s ease;}
 .lg-val{font-weight:700;} .lg-pct{font-family:var(--mono);font-size:14px;color:var(--dim);text-align:right;}
 .legend.inline{flex-direction:row;flex-wrap:wrap;gap:18px;margin-top:10px;}
 .legend.inline .lg-row{display:flex;gap:8px;font-size:15px;color:var(--dim);}
+.legend.inline .lg-btn{background:none;border:none;padding:4px 6px;margin:-4px -2px;border-radius:7px;cursor:pointer;
+  align-items:center;font:inherit;color:var(--dim);transition:opacity .15s,background .15s;}
+.legend.inline .lg-btn:hover{background:var(--glow);}
+.legend.inline .lg-btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
+.legend.inline .lg-btn.off{opacity:.38;}
+.legend.inline .lg-btn[aria-pressed="true"]{color:var(--text);}
 .svg-chart{width:100%;height:220px;display:block;overflow:visible;}
 .svg-chart .grid{stroke:color-mix(in srgb,var(--border) 70%,transparent);stroke-width:1;}
+.svg-chart .vgrid{stroke:color-mix(in srgb,var(--border) 50%,transparent);stroke-width:1;filter:blur(.6px);}
 .svg-chart .base{stroke:var(--border);stroke-width:1;}
 .svg-chart .axis{font-family:var(--mono);font-size:13px;fill:var(--dim);}
+.svg-chart .trend-line{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;
+  filter:drop-shadow(0 1px 3px color-mix(in srgb,currentColor 40%,transparent));}
+.svg-chart .trend-area{opacity:.12;stroke:none;}
+.svg-chart .trend-dot{stroke:var(--panel);stroke-width:1.5;}
 .svg-chart .hit{fill:transparent;cursor:pointer;outline:none;}
 .svg-chart .hit:hover,.svg-chart .hit:focus{fill:var(--glow);}
 .hbars{display:flex;flex-direction:column;gap:13px;}
@@ -1116,14 +1127,28 @@ function renderDonut(stats) {
   svg.append(t, c);
 }
 
-function barPath(x, y, w, h, r) {
-  r = Math.min(r, h, w / 2);
-  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+// Smooth line through points via a Catmull-Rom spline converted to cubic
+// beziers. tension < 1 tames overshoot; a clip-path keeps curves in the plot.
+function smoothPath(pts, tension = 0.8) {
+  if (!pts.length) return '';
+  if (pts.length === 1) return `M${pts[0].x},${pts[0].y}`;
+  const t = tension / 6;
+  let d = `M${pts[0].x},${pts[0].y}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || pts[i + 1];
+    const c1x = p1.x + (p2.x - p0.x) * t, c1y = p1.y + (p2.y - p0.y) * t;
+    const c2x = p2.x - (p3.x - p1.x) * t, c2y = p2.y - (p3.y - p1.y) * t;
+    d += ` C${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)}`;
+  }
+  return d;
 }
+
+// null = show all three lines; a severity key = show only that one ("solo").
+let trendFilter = null;
 
 function renderTrend(logs) {
   const svg = document.getElementById('trend-chart');
-  const W = Math.max(svg.clientWidth, 280), H = 220, pad = {l:32, r:6, t:10, b:24};
+  const W = Math.max(svg.clientWidth, 280), H = 220, pad = {l:32, r:8, t:12, b:24};
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.replaceChildren();
 
@@ -1133,48 +1158,82 @@ function renderTrend(logs) {
   const buckets = Object.fromEntries(days.map(d => [d, {HIGH:0, MEDIUM:0, LOW:0}]));
   logs.forEach(l => { const d = (toKL(l.timestamp) || '').slice(0, 10); if (buckets[d]) buckets[d][sevOf(l)]++; });
   const totals = days.map(d => SEV.reduce((a, s) => a + buckets[d][s.key], 0));
-  const sum = totals.reduce((a, b) => a + b, 0);
-  document.getElementById('trend-sum').textContent = `${sum} total`;
+  document.getElementById('trend-sum').textContent = `${totals.reduce((a, b) => a + b, 0)} total`;
 
-  const max = Math.max(...totals), top = max <= 4 ? 4 : Math.ceil(max / 4) * 4;
+  const shown = SEV.filter(s => !trendFilter || s.key === trendFilter);
+  // Y axis = number of alerts that day. Scale to the tallest single-day value
+  // among the shown severities, rounded up to a tidy integer step (1/2/5/10...)
+  // so every gridline label is a whole, sensible number.
+  const peak = Math.max(1, ...days.flatMap(d => shown.map(s => buckets[d][s.key])));
+  const niceStep = [1, 2, 5, 10, 20, 25, 50, 100].find(s => s >= peak / 4) || Math.ceil(peak / 400) * 100;
+  const top = Math.ceil(peak / niceStep) * niceStep;
   const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b, base = pad.t + ph;
-  [0, top / 2, top].forEach(v => {
-    const y = base - v / top * ph;
+  const xOf = i => pad.l + (days.length === 1 ? pw / 2 : i * pw / (days.length - 1));
+  const yOf = v => base - v / top * ph;
+
+  // Soft vertical guide for each day (the "blurred" day separators).
+  days.forEach((d, i) => svg.append(svgEl('line',
+    {x1:xOf(i), x2:xOf(i), y1:pad.t, y2:base, class:'vgrid'})));
+
+  // Horizontal gridlines at whole-number alert counts.
+  for (let v = 0; v <= top + 1e-9; v += niceStep) {
+    const y = yOf(v);
     svg.append(svgEl('line', {x1:pad.l, x2:W - pad.r, y1:y, y2:y, class: v ? 'grid' : 'base'}));
-    const lbl = svgEl('text', {x:pad.l - 8, y:y + 3, 'text-anchor':'end', class:'axis'}); lbl.textContent = v;
+    const lbl = svgEl('text', {x:pad.l - 8, y:y + 4, 'text-anchor':'end', class:'axis'}); lbl.textContent = v;
     svg.append(lbl);
+  }
+
+  // Clip so smoothed curves never bleed past the plot area.
+  const clipId = 'trend-clip';
+  const defs = svgEl('defs'), clip = svgEl('clipPath', {id:clipId});
+  clip.append(svgEl('rect', {x:pad.l, y:pad.t - 4, width:pw, height:ph + 8}));
+  defs.append(clip);
+  svg.append(defs);
+  const plot = svgEl('g', {'clip-path': `url(#${clipId})`});
+  svg.append(plot);
+
+  // One smooth line + faint area per shown severity. Draw back-to-front so
+  // HIGH (first in SEV) ends up on top.
+  shown.slice().reverse().forEach(s => {
+    const pts = days.map((d, i) => ({x: xOf(i), y: yOf(buckets[d][s.key]), v: buckets[d][s.key]}));
+    const line = smoothPath(pts);
+    const area = svgEl('path', {d: `${line} L${xOf(days.length - 1).toFixed(2)},${base} L${xOf(0).toFixed(2)},${base} Z`, class:'trend-area'});
+    area.style.fill = s.color;
+    const stroke = svgEl('path', {d: line, class:'trend-line'});
+    stroke.style.stroke = s.color;
+    stroke.style.color  = s.color;   // drives the drop-shadow glow
+    plot.append(area, stroke);
+    pts.forEach(p => { if (p.v) { const dot = svgEl('circle', {cx:p.x, cy:p.y, r:2.6, class:'trend-dot'}); dot.style.fill = s.color; plot.append(dot); } });
   });
 
-  const step = pw / days.length, bw = Math.max(4, Math.min(26, step * 0.58));
-  const labelEvery = step < 34 ? 3 : 2;
+  const step = pw / (days.length - 1), labelEvery = step < 34 ? 3 : 2;
   days.forEach((d, i) => {
-    const x = pad.l + i * step + (step - bw) / 2;
-    const segs = SEV.filter(s => buckets[d][s.key]);
-    let y = base;
-    segs.forEach((s, j) => {
-      const h = buckets[d][s.key] / top * ph, gap = j ? 2 : 0;
-      y -= h;
-      const p = svgEl('path', {d: barPath(x, y + gap, bw, Math.max(h - gap, 1), j === segs.length - 1 ? 4 : 0)});
-      p.style.fill = s.color;
-      svg.append(p);
-    });
     if ((days.length - 1 - i) % labelEvery === 0) {
-      const lbl = svgEl('text', {x:pad.l + i * step + step / 2, y:H - 6, 'text-anchor':'middle', class:'axis'});
+      const lbl = svgEl('text', {x:xOf(i), y:H - 6, 'text-anchor':'middle', class:'axis'});
       lbl.textContent = d.slice(5);
       svg.append(lbl);
     }
-    // Whole-column hit target: one tooltip lists every severity for that day
-    const hit = svgEl('rect', {x:pad.l + i * step, y:pad.t, width:step, height:ph, class:'hit', 'aria-label': `${d}: ${totals[i]} alerts`});
-    bindTip(hit, `${d} · ${totals[i]} alert${totals[i] === 1 ? '' : 's'}`,
-      SEV.map(s => ({color:s.color, value:buckets[d][s.key], label:s.label})));
+    // Whole-column hit target: tooltip lists the currently-shown severities.
+    const shownTot = shown.reduce((a, s) => a + buckets[d][s.key], 0);
+    const hit = svgEl('rect', {x:pad.l + i * step - step / 2, y:pad.t, width:step, height:ph, class:'hit', 'aria-label': `${d}: ${shownTot} alerts`});
+    bindTip(hit, `${d} · ${shownTot} alert${shownTot === 1 ? '' : 's'}`,
+      shown.map(s => ({color:s.color, value:buckets[d][s.key], label:s.label})));
     svg.append(hit);
   });
 
+  // Clickable legend: press a severity to show it alone; press it again for all.
   const legend = document.getElementById('trend-legend');
   legend.replaceChildren(...SEV.map(s => {
-    const row = htmlEl('div', 'lg-row'), sw = htmlEl('span', 'lg-sw');
-    sw.style.background = s.color;
+    const row = htmlEl('button', 'lg-row lg-btn' + (trendFilter && trendFilter !== s.key ? ' off' : ''));
+    row.type = 'button';
+    row.setAttribute('aria-pressed', trendFilter === s.key ? 'true' : 'false');
+    const sw = htmlEl('span', 'lg-sw'); sw.style.background = s.color;
     row.append(sw, document.createTextNode(s.label));
+    row.addEventListener('click', () => {
+      trendFilter = trendFilter === s.key ? null : s.key;
+      hideTip();
+      renderTrend(allLogs);
+    });
     return row;
   }));
 }
