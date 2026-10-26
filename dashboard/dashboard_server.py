@@ -394,10 +394,22 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .nav a.active{color:var(--accent);background:var(--glow);border-left-color:var(--accent);}
 .nav a .ico{width:20px;text-align:center;}
 .side-foot{padding:16px 20px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:12px;}
-.theme-toggle{background:var(--panel);border:1px solid var(--border);border-radius:8px;
-  padding:8px 14px;cursor:pointer;font-family:var(--mono);font-size:15px;color:var(--text);
-  display:flex;align-items:center;justify-content:center;gap:6px;transition:all var(--t);}
-.theme-toggle:hover{border-color:var(--accent);color:var(--accent);}
+.theme-toggle{position:relative;width:64px;height:32px;padding:0;flex:none;border:none;border-radius:16px;cursor:pointer;
+  background:linear-gradient(145deg,#1b2a4a,#0c1424);box-shadow:inset 0 1px 3px rgba(0,0,0,.55);transition:box-shadow var(--t);}
+.theme-toggle:focus-visible{outline:none;box-shadow:inset 0 1px 3px rgba(0,0,0,.55),0 0 0 3px var(--glow);}
+.theme-toggle .knob{position:absolute;top:3px;left:3px;width:26px;height:26px;border-radius:50%;color:#0b1b33;
+  background:radial-gradient(circle at 35% 30%,#e4f3ff,#8fcbf2 58%,#4e93d1);
+  display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.45);
+  transition:transform var(--t),background var(--t),box-shadow var(--t);}
+.theme-toggle .knob svg{width:15px;height:15px;}
+.theme-toggle .ic-sun{display:block;}
+.theme-toggle .ic-moon{display:none;}
+[data-theme="dark"] .theme-toggle{box-shadow:inset 0 1px 3px rgba(0,0,0,.55),0 0 16px rgba(52,205,224,.3);}
+[data-theme="dark"] .theme-toggle .knob{transform:translateX(32px);
+  background:radial-gradient(circle at 35% 30%,#ecf9ff,#a6e6ff 55%,#4ac2d8);
+  box-shadow:0 0 14px 2px rgba(74,220,240,.6),0 2px 6px rgba(0,0,0,.4);}
+[data-theme="dark"] .theme-toggle .ic-sun{display:none;}
+[data-theme="dark"] .theme-toggle .ic-moon{display:block;}
 .sys-line{font-family:var(--mono);font-size:13px;color:var(--dim);letter-spacing:1px;overflow-wrap:anywhere;}
 .logout{width:100%;}
 
@@ -621,7 +633,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
     <a href="#settings"><span class="ico">⚙</span>Settings</a>
   </nav>
   <div class="side-foot">
-    <button class="theme-toggle" id="theme-btn" type="button">☀️ Light Mode</button>
+    <button class="theme-toggle" id="theme-btn" type="button" role="switch" aria-checked="true" aria-label="Switch to light mode" title="Dark mode — click for light"><span class="knob"><svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"></circle><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"></path></svg><svg class="ic-moon" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg></span></button>
     <div class="sys-line">SIGNED IN: {{ admin }}<br>ROLE: SUPER ADMIN</div>
     <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm danger logout" type="submit">⏻ Log Out</button></form>
   </div>
@@ -764,7 +776,10 @@ window.fetch = async (url, opts = {}) => {
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
   localStorage.setItem('tg-theme', t);
-  document.getElementById('theme-btn').textContent = t === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
+  const b = document.getElementById('theme-btn');
+  b.setAttribute('aria-checked', t === 'dark');
+  b.setAttribute('aria-label', t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  b.title = t === 'dark' ? 'Dark mode — click for light' : 'Light mode — click for dark';
 }
 function toggleTheme() {
   applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
