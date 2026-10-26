@@ -1211,9 +1211,9 @@ LOGIN_HTML = """<!DOCTYPE html>
 <style nonce="{{ csp_nonce }}">
 :root{--accent:#4fc3f7;--accent2:#2b8fe0;--cyan:#7ddcff;--danger:#ff5a76;--safe:#3ee6a8;
   --mono:'Share Tech Mono',monospace;--sans:'Exo 2',sans-serif;}
-[data-theme="dark"]{--bg:#0e1c33;--panel:#14284a;--border:#264878;--text:#dcebff;--dim:#86a5cc;--inp:#0f2140;
+[data-theme="dark"]{--bg:#0e1c33;--panel:#14284a;--border:#264878;--text:#dcebff;--dim:#86a5cc;--inp:#0f2140;--inp-border:#264878;
   --glow:rgba(79,195,247,.18);--grid:rgba(79,195,247,.05);--onaccent:#06142a;}
-[data-theme="light"]{--bg:#e8f1fb;--panel:#ffffff;--border:#c3d7ef;--text:#0f2545;--dim:#5b7699;--inp:#f6faff;
+[data-theme="light"]{--bg:#e8f1fb;--panel:#ffffff;--border:#c3d7ef;--text:#0f2545;--dim:#5b7699;--inp:#eef4fb;--inp-border:#6f8fb8;
   --glow:rgba(43,143,224,.15);--grid:rgba(43,143,224,.06);--accent:#1b8ad6;--cyan:#0e7fc2;--danger:#e23b5a;--onaccent:#fff;}
 *{margin:0;padding:0;box-sizing:border-box;}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;display:flex;align-items:center;
@@ -1233,7 +1233,7 @@ h1{font-family:var(--mono);font-size:16px;letter-spacing:3px;color:var(--accent)
 .hint{font-size:16px;color:var(--dim);margin-bottom:20px;line-height:1.5;}
 label{display:flex;flex-direction:column;gap:6px;font-family:var(--mono);font-size:13px;letter-spacing:2px;
   color:var(--dim);text-transform:uppercase;margin-bottom:14px;}
-input{padding:11px 14px;border-radius:8px;border:1px solid var(--border);background:var(--inp);color:var(--text);
+input{padding:11px 14px;border-radius:8px;border:1px solid var(--inp-border);background:var(--inp);color:var(--text);
   font-family:var(--mono);font-size:17px;outline:none;transition:border-color .2s;}
 input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--glow);}
 button{width:100%;margin-top:6px;padding:12px;border:none;border-radius:8px;cursor:pointer;font-family:var(--sans);
