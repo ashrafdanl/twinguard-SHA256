@@ -1087,7 +1087,7 @@ window.fetch = async (url, opts = {}) => {
 // ── Theme ──────────────────────────────────────
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
-  localStorage.setItem('tg-theme', t);
+  try { localStorage.setItem('tg-theme', t); } catch(e) {}   // storage may be blocked; theme still applies
   const b = document.getElementById('theme-btn');
   b.setAttribute('aria-checked', t === 'dark');
   b.setAttribute('aria-label', t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
@@ -1096,7 +1096,9 @@ function applyTheme(t) {
 function toggleTheme() {
   applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
 }
-applyTheme(localStorage.getItem('tg-theme') || 'dark');
+let savedTheme = 'dark';
+try { savedTheme = localStorage.getItem('tg-theme') || 'dark'; } catch(e) {}
+applyTheme(savedTheme);
 
 // ── Font size (per-device): 7 steps, default 100%. Applied on release so the ──
 //    page doesn't reflow out from under the slider while you drag it. ──────────
