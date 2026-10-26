@@ -381,11 +381,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 /* ── Sidebar ───────────────────────────── */
 .sidebar{position:fixed;top:0;left:0;bottom:0;width:var(--side);background:var(--bg2);
   border-right:1px solid var(--border);display:flex;flex-direction:column;z-index:200;transition:background var(--t);}
-.logo{display:flex;align-items:center;gap:12px;padding:22px 20px;border-bottom:1px solid var(--border);}
-.logo-icon{width:44px;height:44px;flex-shrink:0;background:linear-gradient(135deg,var(--cyan),var(--accent2));
+.logo{display:flex;align-items:center;gap:10px;padding:22px 16px;border-bottom:1px solid var(--border);}
+.logo-icon{width:58px;height:58px;flex-shrink:0;background:linear-gradient(135deg,var(--cyan),var(--accent2));
   -webkit-mask:url(/static/logo.png) center/contain no-repeat;mask:url(/static/logo.png) center/contain no-repeat;}
-.logo-text{font-size:19px;font-weight:900;letter-spacing:2px;color:var(--text);}
-.logo-sub{font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:2px;margin-top:2px;}
+.logo-text{font-size:23px;font-weight:900;letter-spacing:1.5px;line-height:1.1;color:var(--text);}
+.logo-sub{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:2px;margin-top:4px;}
 .nav{padding:18px 12px;display:flex;flex-direction:column;gap:4px;flex:1;}
 .nav-title{font-family:var(--mono);font-size:13px;letter-spacing:3px;color:var(--dim);padding:8px 12px 6px;}
 .nav a{display:flex;align-items:center;gap:12px;padding:11px 14px;border-radius:8px;color:var(--dim);
@@ -610,7 +610,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
     <div class="logo-icon" role="img" aria-label="TwinGuard logo"></div>
     <div>
       <div class="logo-text">TWINGUARD</div>
-      <div class="logo-sub">SHA-256 // ROGUE AP DEFENSE</div>
+      <div class="logo-sub">ROGUE AP DEFENSE</div>
     </div>
   </div>
   <nav class="nav" id="nav">
