@@ -500,9 +500,12 @@ section{margin-bottom:28px;scroll-margin-top:90px;}
 .fs-slider::-moz-range-thumb{width:24px;height:24px;border-radius:50%;background:#fff;border:1px solid rgba(0,0,0,.18);box-shadow:0 1px 5px rgba(0,0,0,.4);cursor:pointer;}
 .fs-slider:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 3px var(--glow),0 1px 5px rgba(0,0,0,.4);}
 .fs-slider:focus-visible::-moz-range-thumb{box-shadow:0 0 0 3px var(--glow),0 1px 5px rgba(0,0,0,.4);}
-.fs-reset{padding:5px 8px;flex:none;display:inline-flex;align-items:center;justify-content:center;}
-.fs-reset svg{width:15px;height:15px;display:block;}
-.fs-reset:hover{border-color:var(--accent);color:var(--accent);}
+.fs-reset{margin-left:10px;padding:4px;flex:none;display:inline-flex;align-items:center;justify-content:center;
+  background:none;border:none;color:var(--text);cursor:pointer;transition:color .15s;}
+.fs-reset:hover{color:var(--accent);}
+.fs-reset:focus-visible{outline:none;border-radius:6px;box-shadow:0 0 0 3px var(--glow);}
+.fs-reset-ic{width:21px;height:21px;display:block;background:currentColor;
+  -webkit-mask:url(/static/reset.png) center/contain no-repeat;mask:url(/static/reset.png) center/contain no-repeat;}
 .ret-unit{font-family:var(--mono);font-size:15px;color:var(--dim);}
 .ret-status,.form-status{font-family:var(--mono);font-size:15px;}
 .ok{color:var(--safe);} .err{color:var(--danger);}
@@ -811,11 +814,11 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
           <div class="fs-ticks" aria-hidden="true">
             <div class="fs-tick"></div><div class="fs-tick"></div><div class="fs-tick"></div><div class="fs-tick"></div><div class="fs-tick"></div><div class="fs-tick"></div><div class="fs-tick"></div>
           </div>
-          <input class="fs-slider" type="range" id="font-scale" min="0" max="6" step="1" value="2"
+          <input class="fs-slider" type="range" id="font-scale" min="0" max="6" step="1" value="3"
             aria-label="Font size" aria-valuetext="100%">
         </div>
         <span class="fs-a fs-a-lg" data-fs="6" aria-hidden="true">A</span>
-        <button class="btn icon-btn fs-reset" type="button" id="font-reset" title="Reset to default size" aria-label="Reset font size to default"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5v14l-8.5-7L12 5z"></path><path d="M21 5v14l-8.5-7L21 5z"></path></svg></button>
+        <button class="fs-reset" type="button" id="font-reset" title="Reset to default size" aria-label="Reset font size to default"><span class="fs-reset-ic" aria-hidden="true"></span></button>
       </div>
     </div>
   </section>
@@ -867,9 +870,9 @@ applyTheme(localStorage.getItem('tg-theme') || 'dark');
 
 // ── Font size (per-device): 7 steps, default 100%. Applied on release so the ──
 //    page doesn't reflow out from under the slider while you drag it. ──────────
-const FONT_SCALES  = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4];
-const FONT_DEFAULT = 2;            // index of 1.0
-const FONT_KEY     = 'tg-fontscale2';
+const FONT_SCALES  = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3];
+const FONT_DEFAULT = 3;            // index of 1.0 — the middle of the 7 steps
+const FONT_KEY     = 'tg-fontscale3';
 const clampFs = i => { i = Math.round(Number(i)); return i >= 0 ? Math.min(FONT_SCALES.length - 1, i) : FONT_DEFAULT; };
 function applyFontScale(idx, persist) {
   idx = clampFs(idx);
