@@ -420,6 +420,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .nav a:hover{color:var(--text);background:var(--glow);}
 .nav a.active{color:var(--accent);background:var(--glow);border-left-color:var(--accent);}
 .nav a .ico{width:20px;text-align:center;}
+/* PNG icons painted in the link's current colour, so they follow the
+   dim / hover / active theme states just like the glyph icons. */
+.ico.img{display:inline-block;width:20px;height:20px;background:currentColor;vertical-align:middle;
+  -webkit-mask-position:center;mask-position:center;-webkit-mask-size:contain;mask-size:contain;
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;}
+.ico-radar{-webkit-mask-image:url(/static/radar.png);mask-image:url(/static/radar.png);}
+.ico-users{-webkit-mask-image:url(/static/users.png);mask-image:url(/static/users.png);}
 .side-foot{padding:16px 20px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:12px;}
 .theme-toggle{position:relative;width:64px;height:32px;padding:0;flex:none;border:none;border-radius:16px;cursor:pointer;
   background:linear-gradient(145deg,#1b2a4a,#0c1424);box-shadow:inset 0 1px 3px rgba(0,0,0,.55);transition:box-shadow var(--t);}
@@ -661,6 +668,8 @@ tr.scan-detail[hidden]{display:none;}
   background:var(--panel);color:var(--dim);font-family:var(--sans);font-size:16px;font-weight:500;cursor:pointer;transition:all .2s;}
 .utab:hover{color:var(--text);border-color:var(--accent);}
 .utab.active{color:var(--accent);border-color:var(--accent);background:var(--glow);box-shadow:inset 0 -2px 0 var(--accent);}
+.utab .tab-ava{flex:none;display:inline-block;width:17px;height:17px;background:currentColor;
+  -webkit-mask:url(/static/user.png) center/contain no-repeat;mask:url(/static/user.png) center/contain no-repeat;}
 .utab.off .uname-t{text-decoration:line-through;opacity:.7;}
 .utab .cnt{font-family:var(--mono);font-size:14px;padding:1px 7px;border-radius:10px;
   background:color-mix(in srgb,var(--danger) 15%,transparent);color:var(--danger);}
@@ -677,6 +686,10 @@ tr.scan-detail[hidden]{display:none;}
 .user-form .field{min-width:0;width:100%;}
 .form-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
 .uname{font-weight:700;} .umeta{font-size:15px;color:var(--dim);}
+.user-cell{display:flex;align-items:center;gap:12px;}
+.user-ava{flex:none;display:inline-block;width:34px;height:34px;color:var(--accent);background:currentColor;
+  -webkit-mask:url(/static/user.png) center/contain no-repeat;mask:url(/static/user.png) center/contain no-repeat;}
+tr.disabled .user-ava{color:var(--dim);}
 tr.disabled td{opacity:.6;} tr.disabled td:nth-child(4),tr.disabled td:last-child{opacity:1;}
 .row-actions{white-space:nowrap;} .row-actions .btn+.btn{margin-left:6px;}
 .btn.icon-btn{padding:5px 9px;font-size:15px;line-height:1;}
@@ -730,8 +743,8 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
     <div class="nav-title" aria-hidden="true">&nbsp;</div>
     <a href="#overview" class="active"><span class="ico">◈</span>Overview</a>
     <a href="#threats"><span class="ico">⚠</span>Threat Log</a>
-    <a href="#scans"><span class="ico">📡</span>Scans</a>
-    <a href="#users"><span class="ico">👥</span>User Management</a>
+    <a href="#scans"><span class="ico img ico-radar"></span>Scans</a>
+    <a href="#users"><span class="ico img ico-users"></span>User Management</a>
     <a href="#settings"><span class="ico">⚙</span>Settings</a>
   </nav>
   <div class="side-foot">
@@ -1077,7 +1090,7 @@ function renderThreatLog() {
     btn.type = 'button';
     btn.setAttribute('role', 'tab');
     btn.setAttribute('aria-selected', t.key === activeTab);
-    btn.append(htmlEl('span', 'uname-t', '👤 ' + t.label), htmlEl('span', 'cnt' + (n ? '' : ' zero'), n));
+    btn.append(htmlEl('span', 'tab-ava'), htmlEl('span', 'uname-t', t.label), htmlEl('span', 'cnt' + (n ? '' : ' zero'), n));
     btn.addEventListener('click', () => { activeTab = t.key; renderThreatLog(); });
     return btn;
   }));
@@ -1357,7 +1370,7 @@ async function loadUsers() {
       return;
     }
     tbody.innerHTML = users.map(u => `<tr class="${u.enabled ? '' : 'disabled'}">
-      <td><div class="uname">${esc(u.username)}</div><div class="umeta">${esc(u.full_name) || '—'}</div></td>
+      <td><div class="user-cell"><span class="user-ava"></span><div><div class="uname">${esc(u.username)}</div><div class="umeta">${esc(u.full_name) || '—'}</div></div></div></td>
       <td class="umeta">${esc(u.email) || '—'}</td>
       <td><span class="badge role">${esc(u.role).toUpperCase()}</span></td>
       <td><div class="status-cell">
