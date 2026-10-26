@@ -468,6 +468,16 @@ section{margin-bottom:28px;scroll-margin-top:90px;}
 .ret-input{width:72px;padding:8px 10px;border-radius:8px;border:1px solid var(--inp-border);
   background:var(--inp);color:var(--text);font-family:var(--mono);font-size:17px;text-align:center;outline:none;transition:border-color .2s;}
 .ret-input:focus{border-color:var(--accent);}
+.fs-wrap{display:flex;align-items:center;gap:14px;flex:1;min-width:220px;}
+.fs-slider{-webkit-appearance:none;appearance:none;flex:1;max-width:260px;height:6px;border-radius:3px;
+  background:var(--inp);border:1px solid var(--inp-border);outline:none;cursor:pointer;}
+.fs-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:20px;height:20px;border-radius:50%;
+  background:linear-gradient(135deg,var(--cyan),var(--accent2));border:2px solid var(--panel);cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.35);}
+.fs-slider::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:var(--accent2);border:2px solid var(--panel);cursor:pointer;}
+.fs-slider:focus-visible{box-shadow:0 0 0 3px var(--glow);}
+.fs-ticks{display:flex;justify-content:space-between;max-width:260px;flex:1;font-family:var(--mono);font-size:11px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;}
+.fs-ticks span{cursor:pointer;transition:color .15s;}
+.fs-ticks span.on{color:var(--accent);font-weight:700;}
 .ret-unit{font-family:var(--mono);font-size:15px;color:var(--dim);}
 .ret-status,.form-status{font-family:var(--mono);font-size:15px;}
 .ok{color:var(--safe);} .err{color:var(--danger);}
@@ -752,6 +762,17 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
         <span class="ret-status" id="ret-status"></span>
       </div>
     </div>
+    <div class="panel retention-panel">
+      <div class="ret-label">🔠 Font Size</div>
+      <div class="ret-desc">Adjust the dashboard text size. Saved on this device.</div>
+      <div class="fs-wrap">
+        <input class="fs-slider" type="range" id="font-scale" min="0" max="2" step="1" value="1"
+          aria-label="Font size" aria-valuetext="Medium">
+        <div class="fs-ticks" id="fs-ticks" aria-hidden="true">
+          <span data-fs="0">Small</span><span data-fs="1" class="on">Medium</span><span data-fs="2">Big</span>
+        </div>
+      </div>
+    </div>
   </section>
 </main>
 
@@ -787,6 +808,23 @@ function toggleTheme() {
   applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
 }
 applyTheme(localStorage.getItem('tg-theme') || 'dark');
+
+// ── Font size (per-device): Small / Medium / Big, default Medium ──
+const FONT_SCALES = [0.9, 1, 1.12];   // index 0..2 -> Small / Medium / Big
+function applyFontScale(idx) {
+  idx = Math.min(2, Math.max(0, Number(idx) || 0));
+  document.documentElement.style.zoom = FONT_SCALES[idx];
+  try { localStorage.setItem('tg-fontscale', idx); } catch(e) {}
+  const slider = document.getElementById('font-scale');
+  if (slider) {
+    slider.value = idx;
+    slider.setAttribute('aria-valuetext', ['Small','Medium','Big'][idx]);
+  }
+  document.querySelectorAll('#fs-ticks span').forEach(s => s.classList.toggle('on', Number(s.dataset.fs) === idx));
+}
+let savedScale = 1;
+try { const v = localStorage.getItem('tg-fontscale'); if (v !== null) savedScale = Number(v); } catch(e) {}
+applyFontScale(savedScale);
 
 // ── Sidebar nav + clock ────────────────────────
 const navLinks = document.querySelectorAll('#nav a');
@@ -1203,6 +1241,8 @@ document.getElementById('search').addEventListener('input', filterTable);
 document.getElementById('btn-export').addEventListener('click', exportLogs);
 document.getElementById('user-form').addEventListener('submit', addUser);
 document.getElementById('btn-save-retention').addEventListener('click', saveRetention);
+document.getElementById('font-scale').addEventListener('input', e => applyFontScale(e.target.value));
+document.querySelectorAll('#fs-ticks span').forEach(s => s.addEventListener('click', () => applyFontScale(s.dataset.fs)));
 document.getElementById('user-body').addEventListener('click', ev => {
   const b = ev.target.closest('button[data-action]');
   if (!b) return;
