@@ -217,9 +217,14 @@ class FirebaseStore:
     def set_user_enabled(self, uid, enabled):
         if uid not in self.user_profiles():
             raise KeyError(uid)
-        auth.update_user(uid, disabled=not enabled)
-        if not enabled:
-            auth.revoke_refresh_tokens(uid)  # sign the phone app / detector out
+        try:
+            auth.update_user(uid, disabled=not enabled)
+            if not enabled:
+                auth.revoke_refresh_tokens(uid)  # sign the phone app / detector out
+        except auth.UserNotFoundError:
+            raise FirebaseError("This operator has no Firebase Auth account (deleted in the console?)")
+        except firebase_admin.exceptions.FirebaseError as e:
+            raise FirebaseError(f"Firebase refused the change: {e}")
         self.db.collection("users").document(uid).update({"enabled": enabled})
         with self._lock:
             self._users[uid]["enabled"] = enabled

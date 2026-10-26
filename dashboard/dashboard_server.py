@@ -473,8 +473,6 @@ section{margin-bottom:28px;scroll-margin-top:90px;}
 .btn.sm{padding:5px 12px;font-size:12px;}
 .btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 50%,transparent);}
 .btn.danger:hover{background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger);border-color:var(--danger);}
-.btn.enable{color:var(--safe);border-color:color-mix(in srgb,var(--safe) 50%,transparent);}
-.btn.enable:hover{background:color-mix(in srgb,var(--safe) 12%,transparent);color:var(--safe);border-color:var(--safe);}
 .search,.field{flex:1;min-width:200px;padding:10px 14px;border-radius:8px;border:1px solid var(--border);
   background:var(--inp);color:var(--text);font-family:var(--mono);font-size:13px;outline:none;transition:border-color .2s,background var(--t);}
 .search:focus,.field:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--glow);}
@@ -570,8 +568,27 @@ tr.new-row td{animation:flashRow .8s ease;}
 .user-form .field{min-width:0;width:100%;}
 .form-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
 .uname{font-weight:700;} .umeta{font-size:12px;color:var(--dim);}
-tr.disabled td{opacity:.6;} tr.disabled td:last-child{opacity:1;}
+tr.disabled td{opacity:.6;} tr.disabled td:nth-child(4),tr.disabled td:last-child{opacity:1;}
 .row-actions{white-space:nowrap;} .row-actions .btn+.btn{margin-left:6px;}
+.status-cell{display:flex;align-items:center;gap:10px;}
+.tswitch{position:relative;flex:none;width:52px;height:30px;padding:0;border-radius:15px;border:1px solid #c9ccd1;
+  background:#e2e4e8;cursor:pointer;transition:background .25s,border-color .25s;}
+.tswitch::before{content:'';position:absolute;top:50%;right:9px;width:8px;height:8px;margin-top:-6px;
+  border:2px solid #9a9ea6;border-radius:50%;transition:opacity .2s;}
+.tswitch::after{content:'';position:absolute;top:50%;left:12px;width:2px;height:11px;margin-top:-5.5px;
+  background:#fff;border-radius:1px;opacity:0;transition:opacity .2s;}
+.tswitch .knob{position:absolute;top:2px;left:2px;width:24px;height:24px;border-radius:50%;background:#fff;
+  box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .25s;z-index:1;}
+.tswitch[aria-checked="true"]{background:#34c759;border-color:#2fb350;}
+.tswitch[aria-checked="true"]::before{opacity:0;}
+.tswitch[aria-checked="true"]::after{opacity:1;}
+.tswitch[aria-checked="true"] .knob{transform:translateX(22px);}
+.tswitch:focus-visible{outline:none;box-shadow:0 0 0 3px var(--glow);}
+.tswitch:disabled{cursor:wait;opacity:.6;}
+.tswitch-lbl{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:1px;color:var(--dim);}
+.tswitch-lbl.on{color:var(--safe);}
+.user-err{font-family:var(--mono);font-size:12px;color:var(--danger);padding:12px 24px;border-bottom:1px solid var(--border);}
+.user-err:empty{display:none;}
 
 footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;color:var(--dim);
   border-top:1px solid var(--border);margin-top:auto;}
@@ -697,6 +714,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:11px;col
           <span class="form-status" id="user-status"></span>
         </div>
       </form>
+      <div class="user-err" id="user-err" role="alert"></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th>Created (GMT+8)</th><th>Last Login (GMT+8)</th><th>Action</th></tr></thead>
@@ -1105,14 +1123,15 @@ async function loadUsers() {
       <td><div class="uname">${esc(u.username)}</div><div class="umeta">${esc(u.full_name) || '—'}</div></td>
       <td class="umeta">${esc(u.email) || '—'}</td>
       <td><span class="badge role">${esc(u.role).toUpperCase()}</span></td>
-      <td><span class="badge ${u.enabled ? 'on' : 'off'}">${u.enabled ? 'ENABLED' : 'DISABLED'}</span></td>
+      <td><div class="status-cell">
+        <button class="tswitch" type="button" role="switch" aria-checked="${u.enabled}" data-action="toggle"
+          data-id="${esc(u.id)}" aria-label="${u.enabled ? 'Disable' : 'Enable'} ${esc(u.username)}"
+          title="${u.enabled ? 'On: click to disable' : 'Off: click to enable'}"><span class="knob"></span></button>
+        <span class="tswitch-lbl ${u.enabled ? 'on' : ''}">${u.enabled ? 'ON' : 'OFF'}</span></div></td>
       <td class="ts">${fmtTs(u.created_at)}</td>
       <td class="ts">${fmtTs(u.last_login)}</td>
       <td class="row-actions">
-        <button class="btn sm" type="button" data-action="log" data-id="${esc(u.id)}">📄 View Log</button>
-        ${u.enabled
-        ? `<button class="btn sm danger" type="button" data-action="disable" data-id="${esc(u.id)}">Disable</button>`
-        : `<button class="btn sm enable" type="button" data-action="enable" data-id="${esc(u.id)}">Enable</button>`}</td>
+        <button class="btn sm" type="button" data-action="log" data-id="${esc(u.id)}">📄 View Log</button></td>
     </tr>`).join('');
   } catch(e) {
     tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
@@ -1139,12 +1158,18 @@ async function addUser(ev) {
   } catch(e) { s.textContent = '✗ Failed'; s.className = 'form-status err'; }
 }
 
-async function setUserStatus(id, enabled) {
+async function setUserStatus(sw) {
+  const enabled = sw.getAttribute('aria-checked') !== 'true';
+  const err = document.getElementById('user-err');
+  err.textContent = '';
+  sw.disabled = true;
+  sw.setAttribute('aria-checked', enabled);          // flip right away; loadUsers() redraws from the server
   try {
-    await fetch(`/api/users/${encodeURIComponent(id)}/status`, {
+    const r = await fetch(`/api/users/${encodeURIComponent(sw.dataset.id)}/status`, {
       method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled})
     });
-  } catch(e) {}
+    if (!r.ok) err.textContent = '✗ ' + ((await r.json().catch(() => ({}))).error || `Failed (HTTP ${r.status})`);
+  } catch(e) { err.textContent = '✗ Backend not reachable.'; }
   loadUsers();
 }
 
@@ -1164,7 +1189,7 @@ document.getElementById('user-body').addEventListener('click', ev => {
   const b = ev.target.closest('button[data-action]');
   if (!b) return;
   if (b.dataset.action === 'log') openUserLog(b.dataset.id);
-  else setUserStatus(b.dataset.id, b.dataset.action === 'enable');
+  else if (b.dataset.action === 'toggle') setUserStatus(b);
 });
 setInterval(() => {
   const el = document.getElementById('rfill');
