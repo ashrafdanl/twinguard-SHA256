@@ -598,8 +598,14 @@ section{margin-bottom:28px;scroll-margin-top:90px;}
 .fs-reset-ic{width:21px;height:21px;display:block;background:currentColor;
   -webkit-mask:url(/static/reset.png) center/contain no-repeat;mask:url(/static/reset.png) center/contain no-repeat;}
 .ret-unit{font-family:var(--mono);font-size:15px;color:var(--dim);}
+.ret-reset{margin-left:0;}
 .ret-status,.form-status{font-family:var(--mono);font-size:15px;}
 .ok{color:var(--safe);} .err{color:var(--danger);}
+.scan-date{padding:9px 12px;border-radius:8px;border:1px solid var(--inp-border);background:var(--inp);
+  color:var(--text);font-family:var(--mono);font-size:15px;outline:none;transition:border-color .2s;}
+.scan-date:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--glow);}
+:root[data-theme="dark"] .scan-date{color-scheme:dark;}
+:root[data-theme="light"] .scan-date{color-scheme:light;}
 .ret-select{padding:8px 12px;border-radius:8px;border:1px solid var(--inp-border);background:var(--inp);
   color:var(--text);font-family:var(--mono);font-size:16px;outline:none;cursor:pointer;transition:border-color .2s;min-width:120px;}
 .ret-select:focus{border-color:var(--accent);}
@@ -680,6 +686,12 @@ tr.scan-detail[hidden]{display:none;}
 .empty-state{text-align:center;padding:70px 20px;color:var(--dim);font-family:var(--mono);}
 .empty-state .icon{font-size:44px;margin-bottom:14px;}
 .empty-state .icon img.check{width:52px;height:52px;display:inline-block;vertical-align:middle;}
+/* Empty-state PNG icons painted in the state's current colour (theme-matched) */
+.empty-state .icon .es-ic{display:inline-block;width:48px;height:48px;background:currentColor;vertical-align:middle;
+  -webkit-mask-position:center;mask-position:center;-webkit-mask-size:contain;mask-size:contain;
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;}
+.es-radar{-webkit-mask-image:url(/static/radar.png);mask-image:url(/static/radar.png);}
+.es-users{-webkit-mask-image:url(/static/users.png);mask-image:url(/static/users.png);}
 
 /* ── Charts ────────────────────────────── */
 .stat-card.recent{--c:var(--warning);}
@@ -913,6 +925,10 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
     <div class="controls">
       <button class="btn primary" id="btn-refresh-scans" type="button">↻ Refresh</button>
       <input class="search" id="scan-search" type="text" placeholder="Filter by operator...">
+      <input class="scan-date" id="scan-from" type="date" aria-label="From date" title="From date (GMT+8)">
+      <span class="ret-unit">to</span>
+      <input class="scan-date" id="scan-to" type="date" aria-label="To date" title="To date (GMT+8)">
+      <button class="btn sm" id="scan-date-clear" type="button">Clear dates</button>
       <span class="sec-note" id="scan-count"></span>
     </div>
     <div class="panel table-wrap">
@@ -922,7 +938,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
           <th>Highest Finding</th><th>Clock</th><th>SHA-256 Integrity</th>
         </tr></thead>
         <tbody id="scan-body">
-          <tr><td colspan="7" class="empty-state"><div class="icon">📡</div>Loading scans...</td></tr>
+          <tr><td colspan="7" class="empty-state"><div class="icon"><span class="es-ic es-radar"></span></div>Loading scans...</td></tr>
         </tbody>
       </table>
     </div>
@@ -947,7 +963,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
         <table>
           <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th>Created (GMT+8)</th><th>Last Login (GMT+8)</th><th>Action</th></tr></thead>
           <tbody id="user-body">
-            <tr><td colspan="7" class="empty-state"><div class="icon">👥</div>Loading users...</td></tr>
+            <tr><td colspan="7" class="empty-state"><div class="icon"><span class="es-ic es-users"></span></div>Loading users...</td></tr>
           </tbody>
         </table>
       </div>
@@ -963,6 +979,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
         <input class="ret-input" type="number" id="retention-days" min="1" max="3650" value="30">
         <span class="ret-unit">days</span>
         <button class="btn save" id="btn-save-retention" type="button">Save</button>
+        <button class="fs-reset ret-reset" type="button" id="reset-log-retention" title="Reset to default (30 days)" aria-label="Reset log retention to default"><span class="fs-reset-ic" aria-hidden="true"></span></button>
         <span class="ret-status" id="ret-status"></span>
       </div>
     </div>
@@ -973,6 +990,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
         <input class="ret-input" type="number" id="scan-retention-days" min="1" max="3650" value="30">
         <span class="ret-unit">days</span>
         <button class="btn save" id="btn-save-scan-retention" type="button">Save</button>
+        <button class="fs-reset ret-reset" type="button" id="reset-scan-retention" title="Reset to default (30 days)" aria-label="Reset scan retention to default"><span class="fs-reset-ic" aria-hidden="true"></span></button>
         <span class="ret-status" id="scan-ret-status"></span>
       </div>
     </div>
@@ -987,6 +1005,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
           <option value="30">Every 30s</option>
           <option value="60">Every 60s</option>
         </select>
+        <button class="fs-reset ret-reset" type="button" id="reset-auto-refresh" title="Reset to default (every 10s)" aria-label="Reset auto refresh to default"><span class="fs-reset-ic" aria-hidden="true"></span></button>
       </div>
     </div>
     <div class="panel retention-panel">
@@ -1016,6 +1035,7 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:14px;col
           <option value="25">25</option>
           <option value="50">50</option>
         </select>
+        <button class="fs-reset ret-reset" type="button" id="reset-scan-pp" title="Reset to default (12)" aria-label="Reset scans per page to default"><span class="fs-reset-ic" aria-hidden="true"></span></button>
       </div>
     </div>
     <div class="panel retention-panel">
@@ -1549,7 +1569,7 @@ async function loadUsers() {
     document.getElementById('stat-users').textContent  = users.length;
     document.getElementById('stat-active').textContent = users.filter(u => u.enabled).length;
     if (!users.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">👥</div>No users yet. Add one above.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon"><span class="es-ic es-users"></span></div>No users yet. Add one above.</td></tr>';
       return;
     }
     tbody.innerHTML = users.map(u => `<tr class="${u.enabled ? '' : 'disabled'}">
@@ -1568,7 +1588,7 @@ async function loadUsers() {
         <button class="btn sm icon-btn trash-btn" type="button" data-action="delete" data-id="${esc(u.id)}" data-name="${esc(u.username)}" title="Delete user" aria-label="Delete ${esc(u.username)}"><img src="/static/trash.png" alt=""></button></td>
     </tr>`).join('');
   } catch(e) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon"><span class="es-ic es-users"></span></div>Backend not reachable.</td></tr>';
   }
 }
 
@@ -1606,7 +1626,18 @@ function renderScanPager(pages) {
 function renderScans() {
   const tbody = document.getElementById('scan-body');
   const q = (document.getElementById('scan-search').value || '').toLowerCase();
-  const list = allScans.filter(s => String(s.username || '').toLowerCase().includes(q));
+  const from = document.getElementById('scan-from').value;   // '' or 'YYYY-MM-DD' (GMT+8)
+  const to   = document.getElementById('scan-to').value;
+  const list = allScans.filter(s => {
+    if (q && !String(s.username || '').toLowerCase().includes(q)) return false;
+    if (from || to) {
+      const d = (toKL(s.timestamp) || '').slice(0, 10);       // the scan's KL date
+      if (!d) return false;
+      if (from && d < from) return false;
+      if (to && d > to) return false;
+    }
+    return true;
+  });
   const pages = Math.max(1, Math.ceil(list.length / scansPerPage));
   scanPage = Math.min(Math.max(scanPage, 0), pages - 1);
   const pageItems = list.slice(scanPage * scansPerPage, scanPage * scansPerPage + scansPerPage);
@@ -1660,7 +1691,7 @@ async function loadScans() {
     allScans = await (await fetch('/api/scans')).json();
     renderScans();
   } catch(e) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon">⚠️</div>Backend not reachable.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><div class="icon"><span class="es-ic es-radar"></span></div>Backend not reachable.</td></tr>';
   }
 }
 
@@ -1801,9 +1832,31 @@ document.getElementById('search').addEventListener('input', filterTable);
 document.getElementById('btn-export').addEventListener('click', exportLogs);
 document.getElementById('btn-refresh-scans').addEventListener('click', loadScans);
 document.getElementById('scan-search').addEventListener('input', () => { scanPage = 0; renderScans(); });
+document.getElementById('scan-from').addEventListener('change', () => { scanPage = 0; renderScans(); });
+document.getElementById('scan-to').addEventListener('change', () => { scanPage = 0; renderScans(); });
+document.getElementById('scan-date-clear').addEventListener('click', () => {
+  document.getElementById('scan-from').value = '';
+  document.getElementById('scan-to').value = '';
+  scanPage = 0; renderScans();
+});
 document.getElementById('user-form').addEventListener('submit', addUser);
 document.getElementById('btn-save-retention').addEventListener('click', () => saveRetentionField('retention-days', 'retention_days', 'ret-status'));
 document.getElementById('btn-save-scan-retention').addEventListener('click', () => saveRetentionField('scan-retention-days', 'scan_retention_days', 'scan-ret-status'));
+document.getElementById('reset-log-retention').addEventListener('click', () => {
+  document.getElementById('retention-days').value = 30;
+  saveRetentionField('retention-days', 'retention_days', 'ret-status');
+});
+document.getElementById('reset-scan-retention').addEventListener('click', () => {
+  document.getElementById('scan-retention-days').value = 30;
+  saveRetentionField('scan-retention-days', 'scan_retention_days', 'scan-ret-status');
+});
+document.getElementById('reset-auto-refresh').addEventListener('click', () => applyRefresh(10, true));
+document.getElementById('reset-scan-pp').addEventListener('click', () => {
+  scansPerPage = 12;
+  document.getElementById('scan-pp').value = '12';
+  try { localStorage.setItem(SCANPP_KEY, scansPerPage); } catch(_) {}
+  scanPage = 0; renderScans();
+});
 document.getElementById('refresh-interval').addEventListener('change', e => applyRefresh(e.target.value, true));
 document.getElementById('scan-pp').value = String(scansPerPage);
 document.getElementById('scan-pp').addEventListener('change', e => {
