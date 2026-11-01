@@ -26,6 +26,20 @@ import requests
 import firebase_admin
 from firebase_admin import auth, credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
+from google.api_core import retry as _retries, exceptions as _gexc
+
+# google-cloud-firestore 2.34 mishandles its own default retry on this
+# grpcio build: a transient error mid-stream sends it down a branch that reads
+# ``gapic_callable._retry`` (absent here) and raises AttributeError, which
+# escapes and 500s the request. Passing an explicit Retry skips that branch, so
+# every collection-group .stream()/.get() below takes this instead of DEFAULT.
+_STREAM_RETRY = _retries.Retry(
+    predicate=_retries.if_exception_type(
+        _gexc.ServiceUnavailable, _gexc.DeadlineExceeded,
+        _gexc.InternalServerError, _gexc.Aborted, _gexc.ResourceExhausted,
+    ),
+    initial=0.5, maximum=8.0, multiplier=2.0, deadline=30.0,
+)
 
 BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE = os.path.join(BASE_DIR, "firebase_config.json")
@@ -87,7 +101,7 @@ class FirebaseStore:
             self._critical_watch.close()
         try:
             list(self.db.collection_group("detections")
-                 .where(filter=FieldFilter("severity", "in", ALERT_SEVERITIES)).limit(1).stream())
+                 .where(filter=FieldFilter("severity", "in", ALERT_SEVERITIES)).limit(1).stream(retry=_STREAM_RETRY))
         except Exception as e:
             if not getattr(self, "_index_warned", False):
                 print(f"[Firebase] Waiting for the 'detections' index (see firebase/README.md): {str(e)[:120]}")
@@ -141,7 +155,8 @@ class FirebaseStore:
         if counts is None or time.time() - fetched > max_age:
             group = self.db.collection_group("detections")
             try:
-                counts = {sev: int(group.where(filter=FieldFilter("severity", "==", sev)).count().get()[0][0].value)
+                counts = {sev: int(group.where(filter=FieldFilter("severity", "==", sev))
+                                    .count().get(retry=_STREAM_RETRY)[0][0].value)
                           for sev in ("HIGH", "MEDIUM", "LOW")}
             except Exception as e:     # index not serving yet: show what we have instead of failing
                 print(f"[Firebase] Severity counts unavailable, using alerts only: {str(e)[:120]}")
@@ -160,7 +175,7 @@ class FirebaseStore:
         try:
             docs = list(self.db.collection_group("detections")
                         .where(filter=FieldFilter("severity", "==", "LOW"))
-                        .limit(limit).stream())
+                        .limit(limit).stream(retry=_STREAM_RETRY))
         except Exception as e:
             print(f"[Firebase] LOW detections query failed: {str(e)[:120]}")
             return []
@@ -178,13 +193,17 @@ class FirebaseStore:
         group = self.db.collection_group("scans")
         try:
             docs = list(group.order_by("timestamp", direction=firestore.Query.DESCENDING)
-                        .limit(limit).stream())
+                        .limit(limit).stream(retry=_STREAM_RETRY))
         except Exception as e:
             if not getattr(self, "_scan_index_warned", False):
                 print(f"[Firebase] Scans order index not ready; reading all and sorting "
                       f"in memory (create the index for efficiency): {str(e)[:120]}")
                 self._scan_index_warned = True
-            docs = list(group.limit(5000).stream())
+            try:
+                docs = list(group.limit(5000).stream(retry=_STREAM_RETRY))
+            except Exception as e2:     # never let the Scans view 500; degrade to empty
+                print(f"[Firebase] Scans fallback read failed: {str(e2)[:120]}")
+                return []
         entries = [d.to_dict() for d in docs]
         entries.sort(key=lambda s: str(s.get("timestamp", "")), reverse=True)
         return entries[:limit]
@@ -202,7 +221,7 @@ class FirebaseStore:
         while True:
             docs = list(self.db.collection_group(collection)
                         .where(filter=FieldFilter("timestamp", "<", cutoff_iso))
-                        .limit(400).stream())
+                        .limit(400).stream(retry=_STREAM_RETRY))
             if not docs:
                 return removed
             batch = self.db.batch()
@@ -269,7 +288,7 @@ class FirebaseStore:
         for coll in ("detections", "scans"):
             ref = self.db.collection("users").document(uid).collection(coll)
             while True:
-                docs = list(ref.limit(400).stream())
+                docs = list(ref.limit(400).stream(retry=_STREAM_RETRY))
                 if not docs:
                     break
                 batch = self.db.batch()
@@ -332,7 +351,7 @@ class FirebaseStore:
     def admin_exists(self):
         if not self._admin_exists:
             self._migrate_single_admin()
-            self._admin_exists = any(True for _ in self._admins().limit(1).stream())
+            self._admin_exists = any(True for _ in self._admins().limit(1).stream(retry=_STREAM_RETRY))
         return self._admin_exists
 
     def admin_record(self, uid):
