@@ -1746,7 +1746,9 @@ function applyRefresh(sec, persist) {
   } else {
     if (bar) { bar.style.animationDuration = sec + 's'; bar.style.animationPlayState = 'running'; }
     refreshTimer = setInterval(() => loadData(true), sec * 1000);
-    scansTimer   = setInterval(loadScans, Math.max(sec, 30) * 1000);
+    // Scans are a large historical dataset (one Firestore read per scan), so
+    // they are NOT auto-polled -- that would drain the daily read quota. They
+    // load on page open and on the manual "Refresh" button instead.
   }
   if (persist) { try { localStorage.setItem(REFRESH_KEY, sec); } catch(e) {} }
 }

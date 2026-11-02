@@ -33,12 +33,14 @@ from google.api_core import retry as _retries, exceptions as _gexc
 # ``gapic_callable._retry`` (absent here) and raises AttributeError, which
 # escapes and 500s the request. Passing an explicit Retry skips that branch, so
 # every collection-group .stream()/.get() below takes this instead of DEFAULT.
+#
+# ResourceExhausted (429 quota) is deliberately NOT retried: retrying a quota
+# error only burns more of the quota and stalls the request, so it fails fast.
 _STREAM_RETRY = _retries.Retry(
     predicate=_retries.if_exception_type(
-        _gexc.ServiceUnavailable, _gexc.DeadlineExceeded,
-        _gexc.InternalServerError, _gexc.Aborted, _gexc.ResourceExhausted,
+        _gexc.ServiceUnavailable, _gexc.DeadlineExceeded, _gexc.InternalServerError,
     ),
-    initial=0.5, maximum=8.0, multiplier=2.0, deadline=30.0,
+    initial=0.5, maximum=8.0, multiplier=2.0, deadline=20.0,
 )
 
 BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -87,6 +89,11 @@ class FirebaseStore:
         self._users        = {}
         self._admin_exists = False
         self._counts       = (0, None)    # (fetched_at, {"HIGH": n, ...})
+        # Firestore bills per document read; scans/low are large, non-live reads
+        # polled by the dashboard, so they are cached to stay well under quota.
+        self._scans_cache  = (0, None)    # (fetched_at, [entries])
+        self._low_cache    = (0, None)    # (fetched_at, [entries])
+        self._admin_cache  = {}           # uid -> (fetched_at, record)
         self._users_watch    = self.db.collection("users").on_snapshot(self._on_users)
         self._critical_watch = None
         self._ensure_critical_watch()
@@ -168,28 +175,45 @@ class FirebaseStore:
             self._counts = (time.time(), counts)
         return dict(counts)
 
-    def low_detections(self, limit=500):
+    def low_detections(self, limit=500, max_age=120):
         """LOW-severity detections from every operator's space. These are not
         live-watched (they are not alerts), so they are read on demand for the
-        trend chart. Bounded; the chart only plots the last 14 days anyway."""
+        trend chart. Bounded; the chart only plots the last 14 days anyway.
+
+        Cached: the dashboard polls this on its refresh timer, and the trend
+        chart does not need second-by-second freshness, so a short TTL keeps
+        repeated polls from each costing a fresh collection-group read."""
+        fetched, cached = self._low_cache
+        if cached is not None and time.time() - fetched <= max_age:
+            return cached
         try:
             docs = list(self.db.collection_group("detections")
                         .where(filter=FieldFilter("severity", "==", "LOW"))
                         .limit(limit).stream(retry=_STREAM_RETRY))
         except Exception as e:
             print(f"[Firebase] LOW detections query failed: {str(e)[:120]}")
-            return []
-        return [d.to_dict() for d in docs]
+            return cached if cached is not None else []   # serve stale over nothing
+        entries = [d.to_dict() for d in docs]
+        self._low_cache = (time.time(), entries)
+        return entries
 
     # ── Scans ─────────────────────────────────────────────────────────────────
-    def scans(self, limit=1000):
+    def scans(self, limit=1000, max_age=120):
         """The newest scan sweeps from every operator's space, newest first.
 
         Scans can be numerous and are not security alerts, so they are read on
         demand rather than live-watched. The fast path uses the timestamp order
         index; without it we read the whole collection group (bounded) and sort
         in memory, so the newest `limit` are returned rather than an arbitrary
-        subset that silently drops scans."""
+        subset that silently drops scans.
+
+        Cached with a short TTL: reading every operator's whole scan history is
+        the dashboard's most expensive query (one Firestore read per document),
+        so repeated opens/refreshes inside the window are served from memory
+        instead of re-reading thousands of documents and blowing the quota."""
+        fetched, cached = self._scans_cache
+        if cached is not None and time.time() - fetched <= max_age:
+            return cached[:limit]
         group = self.db.collection_group("scans")
         try:
             docs = list(group.order_by("timestamp", direction=firestore.Query.DESCENDING)
@@ -201,11 +225,12 @@ class FirebaseStore:
                 self._scan_index_warned = True
             try:
                 docs = list(group.limit(5000).stream(retry=_STREAM_RETRY))
-            except Exception as e2:     # never let the Scans view 500; degrade to empty
+            except Exception as e2:     # never let the Scans view 500; serve stale, else empty
                 print(f"[Firebase] Scans fallback read failed: {str(e2)[:120]}")
-                return []
+                return cached[:limit] if cached is not None else []
         entries = [d.to_dict() for d in docs]
         entries.sort(key=lambda s: str(s.get("timestamp", "")), reverse=True)
+        self._scans_cache = (time.time(), entries)
         return entries[:limit]
 
     def purge_alerts_before(self, cutoff_iso):
@@ -349,14 +374,39 @@ class FirebaseStore:
         print(f"[Admins] Migrated admin '{d.get('email')}' to admins/{d['uid']}.")
 
     def admin_exists(self):
-        if not self._admin_exists:
+        if self._admin_exists:
+            return True
+        try:
             self._migrate_single_admin()
             self._admin_exists = any(True for _ in self._admins().limit(1).stream(retry=_STREAM_RETRY))
+        except Exception as e:
+            # Firestore unreachable (e.g. read quota exhausted). Assume an admin
+            # exists so the login page is shown -- never crash the page, and
+            # never fall through to first-run setup, which would let a stranger
+            # claim the admin account during an outage. Not cached: retried next
+            # time so a genuinely admin-less project still reaches setup once
+            # Firestore is readable again.
+            print(f"[Firebase] admin_exists check failed, assuming an admin exists: {str(e)[:120]}")
+            return True
         return self._admin_exists
 
-    def admin_record(self, uid):
-        snap = self._admins().document(uid).get()
-        return snap.to_dict() if snap.exists else None
+    def admin_record(self, uid, max_age=120):
+        """The admins/<uid> document, cached briefly. The record changes rarely
+        (email, enabled, 2FA), and it is read on every login and on the periodic
+        session re-check, so a short TTL keeps those off Firestore. On a read
+        failure (e.g. a quota blip) the last-known record is served so an active
+        admin session is not dropped by a transient outage."""
+        fetched, cached = self._admin_cache.get(uid, (0, None))
+        if cached is not None and time.time() - fetched <= max_age:
+            return cached
+        try:
+            snap = self._admins().document(uid).get(retry=_STREAM_RETRY)
+        except Exception as e:
+            print(f"[Firebase] admin record read failed: {str(e)[:120]}")
+            return cached              # stale (or None on a cold start) — don't crash
+        rec = snap.to_dict() if snap.exists else None
+        self._admin_cache[uid] = (time.time(), rec)
+        return rec
 
     def create_admin(self, email, password, created_at):
         """Create the one super admin (first-run setup only)."""
@@ -394,11 +444,13 @@ class FirebaseStore:
         except ValueError as e:
             raise FirebaseError(str(e))
         self._admins().document(uid).update({"email": new_email})
+        self._admin_cache.pop(uid, None)     # don't serve the old email from cache
 
     # ── Admin 2FA ────────────────────────────────────────────────────────────
     def set_admin_totp(self, uid, secret, counter, enrolled_at):
         self._admins().document(uid).update(
             {"totp_secret": secret, "totp_last_counter": counter, "totp_enrolled_at": enrolled_at})
+        self._admin_cache.pop(uid, None)
 
     def consume_totp_counter(self, uid, counter):
         """Atomically record a used TOTP time-step. False if it (or a later one) was already used."""
@@ -412,7 +464,9 @@ class FirebaseStore:
             t.update(ref, {"totp_last_counter": counter})
             return True
 
-        return txn(self.db.transaction())
+        ok = txn(self.db.transaction())
+        self._admin_cache.pop(uid, None)     # counter moved; keep the cache honest
+        return ok
 
     def admin_account_ok(self, uid, logged_in_at):
         """Still an enabled admin, and sessions not revoked (e.g. password reset) since login."""
@@ -441,8 +495,15 @@ class FirebaseStore:
                 raise FirebaseError("Too many failed attempts. Try again later.")
             raise FirebaseError("Invalid email or password")
         claims = auth.verify_id_token(r.json()["idToken"])
+        if claims.get("admin") is not True:
+            raise FirebaseError("This account is not an administrator")
         rec = self.admin_record(claims["uid"])
-        if claims.get("admin") is not True or not rec or rec.get("role", "super") != "super":
+        if rec is None:
+            # Auth confirms the admin claim, but the admins record couldn't be
+            # read (e.g. Firestore read quota exhausted). Don't guess the
+            # account's state -- fail with an honest, non-misleading message.
+            raise FirebaseError("Service temporarily unavailable. Please try again shortly.")
+        if rec.get("role", "super") != "super":
             raise FirebaseError("This account is not an administrator")
         if not rec.get("enabled"):
             raise FirebaseError("This account is disabled")
